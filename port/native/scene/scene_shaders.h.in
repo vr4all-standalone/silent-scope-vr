@@ -1,0 +1,6 @@
+#pragma once
+namespace silent_scope::scene {
+inline const char* SceneVert=R"CVSHADER(@SCENE_VERT@)CVSHADER";
+inline const char* SceneFrag=R"CVSHADER(@SCENE_FRAG@)CVSHADER";
+}
+

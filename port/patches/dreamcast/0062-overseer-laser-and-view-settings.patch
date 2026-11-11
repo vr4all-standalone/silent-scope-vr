@@ -1,0 +1,56 @@
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -547,12 +547,14 @@
+         r.action=row==AdvancedGun||row==AdvancedWorld||row==ResetDefaults||row==Quit||row==Cancel||row==Confirm;
+         if(row==Gun)r.choices={"Arcade","Simulation"};
+         if(row==Hand)r.choices={"Left","Right"};
+-        if(row==Laser||row==HowToPlay||row==FpsCounter)r.choices={"Off","On"};
++        if(row==Laser){r.choices={"Off","Normal","5x","10x"};r.choice=dc::laser_choice();}
++        if(row==WiderView){r.choices={"Off","On","Fade"};r.choice=dc::wider_view_mode();}
++        if(row==HowToPlay||row==FpsCounter)r.choices={"Off","On"};
+         if(row==Reticle)r.choices={"Custom","None"};
+         if(row==Haptics)r.choices={"Off","Light","Medium","Strong"};
+         if(!r.choices.empty()){
+             const auto current=std::find(r.choices.begin(),r.choices.end(),r.value);
+-            r.choice=current==r.choices.end()?-1:int(current-r.choices.begin());
++            if(r.choice<0)r.choice=current==r.choices.end()?-1:int(current-r.choices.begin());
+             r.stepper=false;
+         }
+         p.rows.push_back(std::move(r));
+--- a/core/rend/vr/xr_gun.cpp
++++ b/core/rend/vr/xr_gun.cpp
+@@ -10,6 +10,7 @@
+ 	Copyright 2026 mikermak. This file is part of Flycast and is distributed under the GNU GPL v2 or later.
+ */
+ #include "xr_gun.h"
++#include "dreamcast/dc_settings.h"
+ #include "reticle_settings.h"
+ #include "custom_reticle.h"
+ #include "arcade_gun_color.h"
+@@ -490,7 +491,9 @@
+ 		{
+ 			const glm::vec3 fwd = dir / len;
+ 			glm::vec3 side = glm::cross(fwd, eyePos - muzzle);
+-			side = glm::length(side) < 1e-6f ? glm::vec3(0.0008f, 0, 0) : glm::normalize(side) * 0.0008f;
++			const float halfWidth=silent_scope::dc_settings::is_silent_scope()&&!gun.servicePointer
++                ? silent_scope::dc_settings::laser_half_width() : .0008f;
++            side = glm::length(side) < 1e-6f ? glm::vec3(halfWidth,0,0) : glm::normalize(side)*halfWidth;
+ 			// fades out along the way: it guides without painting over the scene
+ 			const glm::vec3 colour = gun.menuPointer ? theme::Accent : gun.player == 1 ? glm::vec3(0.15f, 0.45f, 1.f) : glm::vec3(1.f, 0.08f, 0.05f);
+ 			const glm::vec4 start { colour, 0.55f }, end { colour, 0.f };
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2251,10 +2251,10 @@
+         ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssFireWas=false;
+         menu::open(headPose());target.menu=true;ss::dc_xr::input_bridge().submit(target);return;
+     }
+-    const bool center=boolAction(recenterAction);
++    const bool center=boolAction(target.hand==Right?recenterAction:laserAction);
+     if(center&&!recenterWas)recenter();recenterWas=center;
+-    const bool laser=boolAction(laserAction);
+-    if(laser&&!laserWas){config::VrLaser.set(!config::VrLaser);config::saveBool("config","vr.Laser",config::VrLaser);}
++    const bool laser=boolAction(target.hand==Right?laserAction:recenterAction);
++    if(laser&&!laserWas)ss::dc_settings::toggle_aiming_aids();
+     laserWas=laser;
+     const bool simulation=ss::dc_settings::simulation_mode();
+     if(simulation!=ssSimulationSelected){

@@ -1,0 +1,258 @@
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -57,6 +57,7 @@
+ bool ssSetting(int row, dc::Setting& setting)
+ {
+     switch (row) {
++    case Gun: setting=dc::Setting::RifleMode; return true;
+     case GunAngle: setting=dc::Setting::GunAngle; return true;
+     case Hand: setting=dc::Setting::Hand; return true;
+     case Laser: setting=dc::Setting::Laser; return true;
+@@ -81,7 +82,7 @@
+ bool ssDisabled(int row)
+ {
+     if (!dc::is_silent_scope()) return false;
+-    if (row==Gun || row==Reload || row==TwoPlayers || row==ServiceMenu || row==GameZoom) return true;
++    if (row==Reload || row==TwoPlayers || row==ServiceMenu || row==GameZoom) return true;
+     dc::Setting setting;
+     return ssSetting(row,setting) && !dc::enabled(setting);
+ }
+@@ -157,8 +158,7 @@
+ std::string value(int row)
+ {
+     if (dc::is_silent_scope()) {
+-        if (row==Gun) return "Rifle";
+-        if (row==Reload) return "Automatic";
++        if (row==Reload) return dc::simulation_mode()?"Manual":"Automatic";
+         if (row==TwoPlayers || row==ServiceMenu || row==GameZoom) return "Unavailable";
+         dc::Setting setting;
+         if (ssSetting(row,setting)) return dc::value(setting);
+@@ -261,7 +261,7 @@
+         dc::Setting setting;
+         if (ssSetting(row,setting)) {
+             if (dc::change(setting,dir)) {
+-                if (row==GunAngle || row==Hand) { gunsTurned=true; fresh=true; }
++                if (row==Gun || row==GunAngle || row==Hand) { gunsTurned=true; fresh=true; }
+                 if (row==Haptics) sampleKnock(hand);
+                 NOTICE_LOG(INPUT,"XR: SS menu %s -> %s",Labels[row],value(row).c_str());
+             }
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -31,6 +31,7 @@
+ #include "dreamcast/rifle_scope_stability.h"
+ #include "dreamcast/rifle_recoil.h"
+ #include "dreamcast/rifle_steady_aim.h"
++#include "dreamcast/rifle_simulation.h"
+ #include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+@@ -141,6 +142,13 @@
+ ss::RifleSmoothing ssSmoothing;
+ ss::RifleScopeStability ssScopeStability;
+ ss::RifleSteadyAim ssSteadyAim;
++ss::RifleSimulation ssSimulation;
++ss::GripLatch ssManipulationTrigger;
++bool ssSimulationSelected=false;
++uint64_t ssSimulationShotSequence{};
++double ssSimulationShotAt=-1;
++glm::mat4 ssMagazineInHand(1.f);
++bool ssMagazineTracked=false;
+ bool ssScopeZoomArmed{};
+ std::array<ss::GripLatch,2> ssGripLatch;
+ ss::dc_mouse::MenuStickDirection ssNativeMenuStick;
+@@ -159,6 +167,7 @@
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
++    ssSimulation.release_hand();ssMagazineTracked=false;ssManipulationTrigger.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2194,8 +2203,19 @@
+     const bool laser=boolAction(laserAction);
+     if(laser&&!laserWas){config::VrLaser.set(!config::VrLaser);config::saveBool("config","vr.Laser",config::VrLaser);}
+     laserWas=laser;
++    const bool simulation=ss::dc_settings::simulation_mode();
++    if(simulation!=ssSimulationSelected){
++        ssSimulationSelected=simulation;
++        ssSimulation.reset();ssSimulationShotAt=-1;
++        ssRifle.reset();
++        resetSilentScopePose();
++        ss::dc_xr::input_bridge().invalidate();
++    }
++    const auto ocular=simulation?ss::dc_rifle::awp_ocular:ss::dc_rifle::ocular;
++    const auto barrel=simulation?ss::dc_rifle::awp_muzzle:ss::dc_rifle::muzzle;
+     const auto* ctx=gles_vr_frame();
+     if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
++        ssSimulation.reset();ssSimulationShotAt=-1;
+         ssNativeGeneration=ctx->dcCamera.generation;ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssSubmittedFireWas=false;
+     }
+     const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
+@@ -2261,7 +2281,7 @@
+     const bool stickQueried=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&stickInfo,&nativeStick));
+     target.ui_navigation=ssNativeMenuStick.update_sample({stickQueried,nativeStick.isActive!=0,
+         nativeStick.currentState.x,nativeStick.currentState.y},target.focused&&target.tracked&&nativeUi,target.hand);
+-    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,ss::dc_rifle::foregrip});
++    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,simulation?ss::dc_rifle::awp_foregrip:ss::dc_rifle::foregrip});
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+         ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
+     if (smoothed.restarted)
+@@ -2270,16 +2290,16 @@
+         const auto local = glm::inverse(smoothed.model);
+         float alignment = 0.f;
+         for (const auto& view : views) {
+-            const auto eye = glm::vec3(local * glm::vec4(relativePosition(view.pose.position), 1)) - ss::dc_rifle::ocular;
++            const auto eye = glm::vec3(local * glm::vec4(relativePosition(view.pose.position), 1)) - ocular;
+             const float radial = 1.f - glm::smoothstep(.018f, .047f, std::hypot(eye.x, eye.y));
+             const float relief = glm::smoothstep(.006f, .030f, eye.z) *
+                 (1.f - glm::smoothstep(.24f, .34f, eye.z));
+             alignment = std::max(alignment, radial * relief);
+         }
+-        ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ss::dc_rifle::ocular,
++        ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ocular,
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+         const auto& firingHand=hands[target.hand];
+-        ssRifleModel=ssSteadyAim.update(ssRifleModel,ss::dc_rifle::ocular,target.host_seconds,
++        ssRifleModel=ssSteadyAim.update(ssRifleModel,ocular,target.host_seconds,
+             firingHand.grip,firingHand.grip_valid);
+     } else {
+         ssScopeStability.reset();
+@@ -2320,6 +2340,26 @@
+     ssSupported=supported.supported;
+     ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&smoothed.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
++    const auto nativeFireSequence=ss::dc_mouse::native_fire_sequence();
++    if(simulation){
++        if(ssSimulationShotAt>=0){
++            if(nativeFireSequence!=ssSimulationShotSequence){
++                ssSimulation.fired();
++                ssSimulationShotAt=-1;
++            }else if(target.host_seconds-ssSimulationShotAt>.25)ssSimulationShotAt=-1;
++        }
++        const auto& hand=hands[1-target.hand];
++        ssMagazineTracked=native3d&&smoothed.valid&&hand.tracked;
++        if(ssMagazineTracked){
++            const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3]);
++            const auto headRelative=glm::vec3(glm::inverse(headPose())*hand.model[3]);
++            const bool nearBelt=headRelative.y<-.27f&&headRelative.y>-.88f&&
++                std::abs(headRelative.x)<.48f&&std::abs(headRelative.z)<.45f;
++            ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,1-target.hand)),true,nearBelt);
++            ssMagazineInHand=glm::translate(hand.model,-ss::RifleSimulation::MagazineBase);
++        }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
++    }
++    const bool gameplayFire=pull&&(!simulation||(!ssFireWas&&ssSimulation.can_fire()&&ssSimulationShotAt<0));
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
+     // Preserve the physical level even when the beam misses or its projection
+     // is unavailable; captured valid hits are independently edge-latched.
+@@ -2331,7 +2371,7 @@
+             ? glm::translate(glm::mat4(1.f),relativePosition(aim[target.hand].pose.position))*
+                 glm::mat4_cast(relativeRotation(aim[target.hand].pose.orientation))
+             : ssRifleModel;
+-        const auto muzzle=glm::vec3(rayModel*glm::vec4(nativeUi?glm::vec3(0):ss::dc_rifle::muzzle,1));
++        const auto muzzle=glm::vec3(rayModel*glm::vec4(nativeUi?glm::vec3(0):barrel,1));
+         const auto forward=glm::normalize(glm::vec3(rayModel*glm::vec4(0,0,-1,0)));
+         const float scale=worldScale();
+         if(std::isfinite(scale)&&scale>0){
+@@ -2362,11 +2402,11 @@
+             // Native gameplay HUD never changes the native input domain. If
+             // the generic picker reports a HUD hit, keep only the barrel ray:
+             // no false marker on the HUD, and no loss of legitimate sky shots.
+-            else {target.point_valid=scene;target.fire=pull&&native3d;}
++            else {target.point_valid=scene;target.fire=gameplayFire&&native3d;}
+             target.native_point={native.x,native.y,native.z};
+             if(target.point_valid){
+                 auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;
+-                line.pose=glm::translate(rayModel,(nativeUi?glm::vec3(0):ss::dc_rifle::muzzle)-gunMuzzle(line.kind));
++                line.pose=glm::translate(rayModel,(nativeUi?glm::vec3(0):barrel)-gunMuzzle(line.kind));
+                 line.aimPoint=muzzle+forward*(dist*scale);line.aimLine=config::VrLaser;
+                 line.aimDot=true;line.now=target.host_seconds;line.menuPointer=target.native_ui;
+                 line.reticleHead=headPose();line.reticlePanelDistance=float(config::VrHudDepth)*scale;
+@@ -2379,6 +2419,7 @@
+     // confirmation is intentionally not inferred from this submission.
+     if(!ssRifleValid)ssRifleRecoil.reset();
+     if(delivered&&emitted.fire&&!ssSubmittedFireWas){
++        if(simulation){ssSimulationShotSequence=nativeFireSequence;ssSimulationShotAt=target.host_seconds;}
+         const bool braced=supported.supported;
+         if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
+         haptic(target.hand,braced?.028f:.038f,1.f);
+@@ -2410,8 +2451,13 @@
+     SsGlState state;
+     glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
+     glClear(GL_DEPTH_BUFFER_BIT);
++    const auto magazine=ssSimulation.magazine();
++    const bool inHand=ssSimulationSelected&&ssMagazineTracked&&
++        (magazine==ss::RifleSimulation::Magazine::EmptyInHand||magazine==ss::RifleSimulation::Magazine::FreshInHand);
++    const bool showMagazine=!ssSimulationSelected||inHand||magazine==ss::RifleSimulation::Magazine::Seated;
+     ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+-        ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale());
++        ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale(),
++        ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;
+@@ -2433,6 +2479,20 @@
+         char label[128];std::snprintf(label,sizeof(label),"XR %.1f Hz   Native main %.1f Hz",ssRates.xr_hz(),ssRates.native_hz());
+         int w=0,h=0;auto tex=textTexture(label,32,theme::Accent,w,h);
+         if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.45f,-1.5f)),tex,.022f*w/h,.022f);
++    }
++    if(ssSimulationSelected&&ssRifleValid&&!menuOpen){
++        using Magazine=ss::RifleSimulation::Magazine;
++        const auto magazine=ssSimulation.magazine();
++        const char* instruction=magazine==Magazine::Missing?"Trigger at hip for fresh magazine":
++            magazine==Magazine::EmptyInHand?"Release empty magazine":
++            magazine==Magazine::FreshInHand?"Seat magazine below receiver":
++            ssSimulation.rounds()==0?"Grab empty magazine with offhand trigger":
++            ssSimulation.can_fire()?"Ready":"Offhand trigger: pull bolt back, then forward";
++        char label[100];
++        std::snprintf(label,sizeof(label),"AWP %d/%d   %s",ssSimulation.rounds(),ss::RifleSimulation::Capacity,instruction);
++        int w=0,h=0;
++        auto texture=textTexture(label,32,theme::Accent,w,h);
++        if(texture&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,-.37f,-1.5f)),texture,.018f*w/h,.018f);
+     }
+     if(menuHowToPlay){
+         const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Scope stability: raise rifle to eyepiece", "Right stick Up / Down: scope zoom", "Left Menu: Settings"};
+@@ -3681,7 +3741,7 @@
+     }
+ 	if (!splashVisible)
+ 		updateLightgun(frameState.predictedDisplayTime);
+-	if(silentScope&&ssRifleValid&&!ssRifle){try{SsGlState state;ssRifle=std::make_unique<ss::RifleRenderer>(ss::dc_rifle::mesh());}catch(const std::exception& e){WARN_LOG(RENDERER,"Silent Scope rifle: %s",e.what());ssRifleValid=false;}}
++	if(silentScope&&ssRifleValid&&!ssRifle){try{SsGlState state;ssRifle=std::make_unique<ss::RifleRenderer>(ssSimulationSelected?ss::dc_rifle::awp_mesh():ss::dc_rifle::mesh());}catch(const std::exception& e){WARN_LOG(RENDERER,"Silent Scope rifle: %s",e.what());ssRifleValid=false;}}
+     retryControllerModels();
+ 	updateControllers(frameState.predictedDisplayTime);
+ 	noteDrawn();
+--- a/core/dreamcast/dc_mouse_native.h
++++ b/core/dreamcast/dc_mouse_native.h
+@@ -13,6 +13,7 @@
+ // Idempotent while enabled: repeated per-frame queries do not reset input.
+ // Target.host_seconds uses steady_clock::now().time_since_epoch() seconds.
+ dc_xr::InputSink native_mouse_sink();
++std::uint64_t native_fire_sequence();
+ void disable_native_mouse();
+ 
+ // Emulation thread only, at port A / main device / player 0 GetMouseInput.
+--- a/core/dreamcast/dc_mouse_native.cpp
++++ b/core/dreamcast/dc_mouse_native.cpp
+@@ -24,6 +24,7 @@
+ static_assert((1u<<Mouse::MIDDLE_BUTTON)==Middle,"Native Middle changed");
+ constexpr std::size_t RamBytes=16u*1024*1024;
+ constexpr std::uint64_t StockLimits=(std::uint64_t(5500)<<32)|4300;
++std::atomic<std::uint64_t> fireSequence{};
+ struct NativeState {
+  Consumer consumer;
+  std::mutex activation;
+@@ -77,6 +78,7 @@
+  s.enabled.store(false,std::memory_order_release);
+  invalidate(Event::Start,nullptr);s.initialized.store(true,std::memory_order_release);
+ }
++std::uint64_t native_fire_sequence(){return fireSequence.load(std::memory_order_acquire);}
+ dc_xr::InputSink native_mouse_sink(){
+  auto& s=state();const std::lock_guard<std::mutex> lock(s.activation);
+  if(!s.initialized.load(std::memory_order_acquire))return {};
+@@ -131,6 +133,7 @@
+  feedback.pitch_min=-double(facts.pitch_limit);feedback.pitch_max=facts.pitch_limit;
+  auto packet=s.consumer.poll(host_seconds(),feedback);
+  if(generation!=s.generation.load(std::memory_order_acquire)||!s.enabled.load(std::memory_order_acquire))packet={};
++ if(packet.fresh_fire)fireSequence.fetch_add(1,std::memory_order_release);
+  log_menu(packet,feedback,menu);
+  // Bounded readback for scope/trigger validation on the headset.
+  static double next_game_report{};

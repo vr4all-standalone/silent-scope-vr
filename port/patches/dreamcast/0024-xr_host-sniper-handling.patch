@@ -1,0 +1,189 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -24,6 +24,8 @@
+ #include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/rifle_renderer.h"
+ #include "dreamcast/rifle_support.h"
++#include "dreamcast/rifle_smoothing.h"
++#include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+ #include <cstdio>
+ 
+@@ -129,6 +131,11 @@
+ namespace ss = silent_scope;
+ std::unique_ptr<ss::RifleRenderer> ssRifle;
+ ss::RifleSupport ssSupport;
++ss::RifleSmoothing ssSmoothing;
++std::array<ss::GripLatch,2> ssGripLatch;
++ss::dc_mouse::MenuStickDirection ssNativeMenuStick;
++int ssPoseHand=-1;
++bool ssSupported{};
+ ss::dc_xr::FrameRates ssRates;
+ double ssProfileStarted=-1,ssProfileLast=-1;
+ uint64_t ssScopeFrames{},ssScopeReady{};
+@@ -137,6 +144,11 @@
+ bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
+ uint64_t ssNativeGeneration{};
+ XrTime ssSecondarySince{};
++void resetSilentScopePose(){
++    ssSupport.reset();ssSmoothing.reset();ssNativeMenuStick.reset();
++    for(auto& grip:ssGripLatch)grip.reset();
++    ssPoseHand=-1;ssSupported=false;
++}
+ bool initTried;
+ bool sessionRunning;
+ bool focused;
+@@ -921,7 +933,7 @@
+ 			if(!nowFocused)setZoomInputAvailable(false);
+ 			focused = nowFocused;
+             if(ss::dc_settings::is_silent_scope()&&!nowFocused){
+-                ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;
++                ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;
+                 ssSecondaryArmed=false;ssSecondarySince=0;ss::dc_scope::silent_scope_dc_scope_invalidate();
+             }
+ 			if (nowFocused)
+@@ -1013,7 +1025,7 @@
+ 	originPos = center;
+ 	originRot = yawOnly(toQuat(views[0].pose.orientation));
+ 	originSet = true;
+-    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;}
++    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;}
+ 	recenterRequested = false;
+ 	NOTICE_LOG(RENDERER, "XR: game camera placed at the head");
+ 	// (the menu's Recenter, or the headset put on again: the menu in front of the head again)
+@@ -2142,7 +2154,7 @@
+     pointerShown[Left]=pointerShown[Right]=false;
+     ss::dc_xr::Target target;target.hand=ss::dc_settings::primary_hand();
+     target.focused=focused;target.menu=menuOpen;target.host_seconds=ss::dc_scope::monotonic_seconds();
+-    auto release=[&]{ssSupport.reset();ssFireWas=ssSubmittedFireWas=false;ss::dc_xr::input_bridge().submit(target);};
++    auto release=[&]{resetSilentScopePose();ssFireWas=ssSubmittedFireWas=false;ss::dc_xr::input_bridge().submit(target);};
+     if(!focused){ssSecondaryArmed=false;ssSecondarySince=0;release();return;}
+     const XrActiveActionSet active{actionSet,XR_NULL_PATH};
+     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;
+@@ -2160,7 +2172,7 @@
+         release();updateMenu(time,menuEdge,secondary,secondaryEdge);return;
+     }
+     if(menuEdge){
+-        ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssFireWas=false;
++        ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssFireWas=false;
+         menu::open(headPose());target.menu=true;ss::dc_xr::input_bridge().submit(target);return;
+     }
+     const bool center=boolAction(recenterAction);
+@@ -2168,6 +2180,25 @@
+     const bool laser=boolAction(laserAction);
+     if(laser&&!laserWas){config::VrLaser.set(!config::VrLaser);config::saveBool("config","vr.Laser",config::VrLaser);}
+     laserWas=laser;
++    const auto* ctx=gles_vr_frame();
++    if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
++        ssNativeGeneration=ctx->dcCamera.generation;ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssSubmittedFireWas=false;
++    }
++    const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
++        &&config::VrReproject&&!gles_vr_showing_framebuffer();
++    const auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
++    static auto previousInputDomain=ss::dc_ui::Domain::Unknown;
++    if(inputDomain!=previousInputDomain){
++        previousInputDomain=inputDomain;
++        // Unknown must not masquerade as physical release then replay a held
++        // trigger when World returns. Keep raw trigger hysteresis, rearm bridge.
++        ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssSubmittedFireWas=false;
++    }
++    const bool native3d=inputDomain==ss::dc_ui::Domain::World;
++    const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
++    target.native_ui=nativeUi;
++    // Cancel old generation/owner state before solving this frame's pose.
++    if(ssPoseHand!=target.hand){resetSilentScopePose();ssPoseHand=target.hand;}
+     XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
+     constexpr auto required=XR_SPACE_LOCATION_POSITION_VALID_BIT|XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|
+         XR_SPACE_LOCATION_POSITION_TRACKED_BIT|XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+@@ -2182,32 +2213,31 @@
+            (grip.locationFlags&required)==required && glm::length(toVec(grip.pose.position))<.25f)palm=toVec(grip.pose.position);
+         auto model=glm::translate(room,palm);
+         if(h==target.hand)model=glm::rotate(model,glm::radians(float(gun_angle::displayed(config::VrGunAngle)-10)),glm::vec3(1,0,0));
+-        hands[h]={model,tracked[h],floatAction(gripAction,h)>.7f};
++        XrActionStateGetInfo gripInfo{XR_TYPE_ACTION_STATE_GET_INFO};
++        gripInfo.action=gripAction;gripInfo.subactionPath=handPaths[h];
++        XrActionStateFloat squeeze{XR_TYPE_ACTION_STATE_FLOAT};
++        const bool gripKnown=XR_SUCCEEDED(XR(xrGetActionStateFloat)(session,&gripInfo,&squeeze))&&squeeze.isActive&&
++            std::isfinite(squeeze.currentState)&&squeeze.currentState>=0&&squeeze.currentState<=1&&tracked[h]&&ssHeadTracked;
++        bool held=true;
++        if(gripKnown)held=ssGripLatch[h].update(squeeze.currentState);else ssGripLatch[h].reset();
++        hands[h]={model,tracked[h],held,gripKnown&&ssGripLatch[h].valid()};
+     }
+     target.tracked=ssHeadTracked&&originSet&&tracked[target.hand];
+-    const auto supported=ssSupport.update(hands,{target.focused&&ssHeadTracked,false,target.hand});
+-    if(supported.valid)ssRifleModel=supported.model;
+-    const auto* ctx=gles_vr_frame();
+-    if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
+-        ssNativeGeneration=ctx->dcCamera.generation;ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssSubmittedFireWas=false;
+-    }
+-    const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
+-        &&config::VrReproject&&!gles_vr_showing_framebuffer();
+-    const auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
+-    static auto previousInputDomain=ss::dc_ui::Domain::Unknown;
+-    if(inputDomain!=previousInputDomain){
+-        previousInputDomain=inputDomain;
+-        // Unknown must not masquerade as physical release then replay a held
+-        // trigger when World returns. Keep raw trigger hysteresis, rearm bridge.
+-        ss::dc_xr::input_bridge().invalidate();ssSubmittedFireWas=false;
+-    }
+-    const bool native3d=inputDomain==ss::dc_ui::Domain::World;
+-    const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
+-    target.native_ui=nativeUi;
+-    ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&supported.valid&&!menuHowToPlay;
++    XrActionStateGetInfo stickInfo{XR_TYPE_ACTION_STATE_GET_INFO};stickInfo.action=stickAction;
++    XrActionStateVector2f nativeStick{XR_TYPE_ACTION_STATE_VECTOR2F};
++    const bool stickQueried=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&stickInfo,&nativeStick));
++    target.ui_navigation=ssNativeMenuStick.update_sample({stickQueried,nativeStick.isActive!=0,
++        nativeStick.currentState.x,nativeStick.currentState.y},target.focused&&target.tracked&&nativeUi,target.hand);
++    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand});
++    const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
++        ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
++    if(smoothed.valid)ssRifleModel=smoothed.model;
++    if(supported.supported&&!ssSupported)haptic(1-target.hand,.025f,.25f);
++    ssSupported=supported.supported;
++    ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&smoothed.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
+-    if(target.tracked&&(nativeUi||supported.valid)&&inputDomain!=ss::dc_ui::Domain::Unknown){
++    if(target.tracked&&(nativeUi||smoothed.valid)&&inputDomain!=ss::dc_ui::Domain::Unknown){
+         // Native panels use the tracked controller ray. A rifle-length muzzle
+         // can already be past the panel at ordinary arm's length.
+         const auto rayModel=nativeUi
+@@ -2282,8 +2312,8 @@
+         if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.45f,-1.5f)),tex,.022f*w/h,.022f);
+     }
+     if(menuHowToPlay){
+-        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "B / Y: hold 0.8s for Menu", "Offhand grip near fore-end: Support", "Left Menu: Settings"};
+-        for(int n=0;n<5;++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
++        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Either stick Up/Down: Native menus", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Aim smoothing: VR settings", "Left Menu: Settings"};
++        for(int n=0;n<7;++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
+             if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.2f-.075f*n,-1.4f)),tex,.025f*w/h,.025f);}
+     }
+ }
+@@ -3139,7 +3169,7 @@
+ 
+ void recenter()
+ {
+-    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=true;}
++    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssRifleValid=false;ssFireWas=true;}
+ 	recenterRequested = true;
+ }
+ 
+@@ -3249,7 +3279,7 @@
+ {
+     ss::dc_view::shutdown_view_runtime();
+     ss::dc_xr::set_input_sink({});ss::dc_mouse::disable_native_mouse();
+-    ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();ssProfileStarted=ssProfileLast=-1;ssScopeFrames=ssScopeReady=0;
++    ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssRifleValid=false;ssRifle.reset();ssRates.reset();ssProfileStarted=ssProfileLast=-1;ssScopeFrames=ssScopeReady=0;
+     ss::dc_scope::silent_scope_dc_scope_active(false);
+ 	if (instance != XR_NULL_HANDLE)
+ 	{
+@@ -3651,7 +3681,7 @@
+ 			for (int hand : { Left, Right })
+ 				if (pointerShown[hand])
+ 				{
+-					drawGunGlow(viewProj, eyePos, pointers[hand], first);
++					drawGunGlow(viewProj, eyePos, pointers[hand], first, drawRifle&&!pointers[hand].menuPointer);
+ 					first = false;
+ 				}
+ 			// the how-to-play labels by the buttons of the controllers held, over everything

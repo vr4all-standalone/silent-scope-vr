@@ -1,0 +1,10 @@
+--- a/core/dreamcast/dc_hud_message.h
++++ b/core/dreamcast/dc_hud_message.h
+@@ -105,6 +105,7 @@
+             "I've received information that the\nFirst Lady has been captured by the\nterrorists at the Hotel Imperial.",
+             "Find their hideout and remove them all.\nOver.",
+             "These guys are members of\nthe terrorist gang.\nRemove!",
++            "I've spotted the target!",
+             "I've found the First Lady.\nShe's being held by Hornet.",
+             "He's the expert sniper.\nBe careful!",
+             "I have received information on the\nlocation of the enemy's base.\nThe President must be imprisoned there.\nBreak into their base.",

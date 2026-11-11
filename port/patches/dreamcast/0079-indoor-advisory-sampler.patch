@@ -1,0 +1,14 @@
+--- a/core/dreamcast/dc_hud_message.h
++++ b/core/dreamcast/dc_hud_message.h
+@@ -12,8 +12,9 @@
+     std::array<char,Slots> glyphs_{};
+     template<class Polygon> static bool material(const Polygon& p,bool plate){
+         if(p.isp.full!=0xc8800000||p.tileclip!=0x00100200)return false;
+-        // Indoor inherits the font's TSP on the same untextured plate.
+-        if(plate)return p.pcw.full==0x828c0002u&&(p.tsp.full==0x9491a4e4u||p.tsp.full==0x9491a4edu);
++        // The untextured plate can inherit the preceding draw's sampler bits.
++        if(plate)return p.pcw.full==0x828c0002u&&
++            (p.tsp.full==0x9491a4e4u||p.tsp.full==0x9491a4edu||p.tsp.full==0x9491a4dbu);
+         return p.pcw.full==0x828c000au&&p.tsp.full==0x9491a4edu&&p.tcw.full==0x500c0000;
+     }
+     template<class Context,class Polygon> static bool quad(const Context& ctx,const Polygon& p,unsigned slot,char glyph){

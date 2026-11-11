@@ -1,0 +1,43 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -19,6 +19,7 @@
+ #include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
++#include "dreamcast/dc_hud_message.h"
+ #include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/rifle_renderer.h"
+ #include "dreamcast/rifle_support.h"
+@@ -1107,6 +1108,9 @@
+         bool(config::VrReproject), 2);
+     const auto nativeHudPlane = silent_scope::dc_hud::placement(worldScale(),
+         silent_scope::dc_hud::actual_wider(ctx), float(config::VrHudSize), silent_scope::dc_settings::panel_distance_metres());
++    silent_scope::dc_hud_message::HurryUpGroup nativeMessage;
++    if (silent_scope::dc_hud::enabled(nativeHudGate))
++        nativeMessage.configure(settings.content.gameId, ctx);
+     bool nativeHudHit = false;
+     silent_scope::dc_hud::Hit nativeHudResult;
+     nativeHudResult.distance = 1e30f;
+@@ -1163,12 +1167,18 @@
+                 silent_scope::dc_native_primer::proven_triangle(settings.content.gameId, ctx,
+                     listName[0] == 'O' ? 0u : listName[0] == 'P' ? 1u : 2u, polyIndex, a, b, c))
+             return;
+-        if (poly != nullptr && listName[0] == 'T' &&
+-                silent_scope::dc_hud::classify(nativeHudGate, *poly, ctx.verts[a], ctx.verts[b], ctx.verts[c])
+-                    != silent_scope::dc_hud::Layer::World)
++        silent_scope::dc_hud::Decision nativeHudDecision;
++        if (poly != nullptr && listName[0] == 'T')
++        {
++            nativeHudDecision = silent_scope::dc_hud::classify_detailed(nativeHudGate, *poly,
++                ctx.verts[a], ctx.verts[b], ctx.verts[c]);
++            if (nativeHudDecision.layer == silent_scope::dc_hud::Layer::World)
++                nativeHudDecision = nativeMessage.classify(ctx, 2u, polyIndex, a, b, c);
++        }
++        if (nativeHudDecision.layer != silent_scope::dc_hud::Layer::World)
+         {
+             silent_scope::dc_hud::Hit hit;
+-            if (silent_scope::dc_hud::hit_triangle(nativeHudGate, *poly, ctx.verts[a], ctx.verts[b], ctx.verts[c],
++            if (silent_scope::dc_hud::hit_decision(nativeHudDecision, ctx.verts[a], ctx.verts[b], ctx.verts[c],
+                     nativeHudPlane, {o.x,o.y,o.z}, {d.x,d.y,d.z},
+                     silent_scope::dc_hud::NativeTanX, silent_scope::dc_hud::NativeTanY, hit)
+                     && hit.distance < nativeHudResult.distance)

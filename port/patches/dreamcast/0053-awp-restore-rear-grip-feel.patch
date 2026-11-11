@@ -1,0 +1,14 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2334,10 +2334,7 @@
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+         ssRifleModel=ssSteadyAim.update(ssRifleModel,ocular,target.host_seconds,
+             boolAction(startAction,Right),aimTracked);
+-        if(carryActive){
+-            ssRifleModel[3]=hands[target.hand].model[3];
+-            ssCarry.remember_aimed_pose(ssRifleModel,supported.supported);
+-        }
++        if(carryActive)ssCarry.remember_aimed_pose(ssRifleModel,supported.supported);
+     } else {
+         if(carryActive)ssRifleModel=carryModel;
+         ssScopeStability.reset();

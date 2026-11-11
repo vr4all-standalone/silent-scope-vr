@@ -1,0 +1,51 @@
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -349,8 +349,7 @@
+     return silent_scope::dc_scope_hud::draw_ranges(gate, *gl.rendContext, *params, polygon, first, count,
+         triangles ? hud::Primitive::Triangles : hud::Primitive::Strip, [&](const hud::DrawRange& range) {
+             SetGPState<Type, SortingEnabled>(params, range.flip ? 1u : 0u);
+-            if (silent_scope::dc_settings::simulation_mode() &&
+-                (range.layer == hud::Layer::Ammo || range.layer == hud::Layer::AmmoPlate)) return;
++            if (range.layer == hud::Layer::Ammo && vr::xr::simulationMagazineEmpty()) return;
+             if (range.layer != hud::Layer::World)
+                 silentScopeHudUniforms(range.layer, range.first, CurrentShader->vrOverlay, CurrentShader->vrHudSize, range.native_scale);
+             glDrawElements(triangles ? GL_TRIANGLES : GL_TRIANGLE_STRIP, range.count, gl.index_type,
+@@ -480,8 +479,7 @@
+                 if (silent_scope::dc_scope_hud::draw_ranges(silentScopeHudGate(true), *gl.rendContext, *params, gl.rendContext->sortedTriangles[p].polyIndex,
+                         gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count,
+                         hud::Primitive::Triangles, [&](const hud::DrawRange& range) {
+-                            if (silent_scope::dc_settings::simulation_mode() &&
+-                                (range.layer == hud::Layer::Ammo || range.layer == hud::Layer::AmmoPlate)) return;
++                            if (range.layer == hud::Layer::Ammo && vr::xr::simulationMagazineEmpty()) return;
+                             if (range.layer != hud::Layer::World)
+                                 silentScopeHudUniforms(range.layer, range.first,
+                                     gl.modvol_shader.vrOverlay, gl.modvol_shader.vrHudSize, range.native_scale, ShaderUniforms.vrHudSize);
+--- a/core/rend/vr/xr_host.h
++++ b/core/rend/vr/xr_host.h
+@@ -35,6 +35,7 @@
+ bool frame();
+ // The eye being drawn right now, or nullptr outside an eye pass.
+ const Eye *currentEye();
++bool simulationMagazineEmpty();
+ // The render context is going away (app in the background, renderer restart): drop the
+ // session bound to it. The next frame() starts a new one on the new context.
+ void term();
+@@ -98,6 +99,7 @@
+ inline bool enabled() { return false; }
+ inline bool frame() { return false; }
+ inline const Eye *currentEye() { return nullptr; }
++inline bool simulationMagazineEmpty() { return false; }
+ inline void term() {}
+ inline const char *controllerProfile() { return ""; }
+ inline bool menuPaused() { return false; }
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -3288,6 +3288,8 @@
+ 	return on && !(initTried && session == XR_NULL_HANDLE);
+ }
+ 
++bool simulationMagazineEmpty() { return ssSimulationSelected && ssSimulation.rounds()==0; }
++
+ const Eye *currentEye()
+ {
+ 	return drawingEye ? &eye : nullptr;

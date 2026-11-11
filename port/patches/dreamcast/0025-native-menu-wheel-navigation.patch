@@ -1,0 +1,189 @@
+--- a/core/dreamcast/dc_mouse_input.cpp
++++ b/core/dreamcast/dc_mouse_input.cpp
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #include "dc_mouse_input.h"
++#include "dc_menu_navigation.h"
+ #include <algorithm>
+ #include <array>
+ #include <cmath>
+@@ -25,19 +26,20 @@
+  return finite(t.yaw_units)&&finite(t.pitch_units)&&(point_ok(t)||(t.direction_valid&&finite(n)&&std::abs(n-1)<.001));}
+ bool hint_ok(double gain){return finite(gain)&&std::abs(gain)>=.0001&&std::abs(gain)<=128;}
+ struct Edge {std::uint64_t id{};double at{-1},yaw{},pitch{};bool aim_valid{};};
+-struct Snapshot {dc_xr::Target target{};bool have{};std::uint64_t reset{};Edge fire,ui,start;};
++struct Snapshot {dc_xr::Target target{};bool have{};std::uint64_t reset{};Edge fire,ui,start,navigation;int navigation_direction{};};
+ struct Axis {double gain{},residual{};bool learned{};};
+ struct Flight {bool active{};int dx{},dy{};double yaw{},pitch{},last_yaw{},last_pitch{},host{},native{},gx{},gy{};bool trusted_x{},trusted_y{};};
+ }
+ struct Consumer::Impl {
+- std::mutex mutex;Snapshot snapshot;dc_xr::Target previous;bool producer_have{},fire_arm{},ui_arm{},start_arm{};
++ std::mutex mutex;Snapshot snapshot;dc_xr::Target previous;bool producer_have{},fire_arm{},ui_arm{},start_arm{},navigation_arm{};
+  bool have_feedback{},have_metadata{},fault{};Status fault_status{Status::AckTimeout};
+- Feedback previous_feedback;std::uint64_t seen_reset{},seen_fire{},seen_ui{},seen_start{};
++ Feedback previous_feedback;std::uint64_t seen_reset{},seen_fire{},seen_ui{},seen_start{},seen_navigation{};
++ MenuNavigation navigation;
+  double last_host{-1},pending_at{-1},middle_until{-1};bool hold_fire{};Axis x,y;Flight flight;
+  double fault_host{-1},fault_native{-1};
+  std::uint8_t held_native{};
+- void clear_motion(){flight={};x={};y={};pending_at=-1;middle_until=-1;hold_fire=false;fault=false;held_native=0;}
+- void barrier(const Snapshot& s){clear_motion();seen_fire=s.fire.id;seen_ui=s.ui.id;seen_start=s.start.id;}
++ void clear_motion(){flight={};x={};y={};pending_at=-1;middle_until=-1;hold_fire=false;fault=false;held_native=0;navigation.reset();}
++ void barrier(const Snapshot& s){clear_motion();seen_fire=s.fire.id;seen_ui=s.ui.id;seen_start=s.start.id;seen_navigation=s.navigation.id;}
+  void cancel_aim(const Snapshot& s){const double until=middle_until;barrier(s);middle_until=until;}
+  bool same_profile(const Feedback& a,const Feedback& b)const {
+   return a.generation==b.generation&&a.gain.signature==b.gain.signature&&a.gain.verified==b.gain.verified
+@@ -65,6 +67,10 @@
+   if(s.start.id>seen_start){seen_start=s.start.id;if(t.start&&now-s.start.at<=FireQueueSeconds)middle_until=f.native_seconds+StartSeconds;}
+   if(t.start&&f.native_seconds<middle_until)out.pressed|=Middle;
+   if(t.native_ui){flight={};pending_at=-1;hold_fire=false;out.status=Status::UiClickOnly;out.ui_pointing_unverified=true;
++   const bool fresh=s.navigation.id>seen_navigation;seen_navigation=s.navigation.id;
++   if(f.menu_navigation_verified)out.wheel=navigation.poll(now,t.ui_navigation,
++      fresh&&now-s.navigation.at<=FireQueueSeconds,s.navigation_direction);
++   else navigation.reset();
+    if(s.ui.id>seen_ui){seen_ui=s.ui.id;if(t.ui_select&&point_ok(t)&&now-s.ui.at<=FireQueueSeconds)out.pressed|=Left;}
+    return out;
+   }
+@@ -144,16 +150,21 @@
+  const bool transition=!p.producer_have||p.previous.epoch!=t.epoch||p.previous.hand!=t.hand||p.previous.focused!=t.focused
+   ||p.previous.tracked!=t.tracked||p.previous.menu!=t.menu||p.previous.native_ui!=t.native_ui||!finite(t.host_seconds)
+   ||(p.producer_have&&t.host_seconds<p.previous.host_seconds);
+- if(transition){++p.snapshot.reset;p.fire_arm=p.ui_arm=p.start_arm=false;}
++ if(transition){++p.snapshot.reset;p.fire_arm=p.ui_arm=p.start_arm=p.navigation_arm=false;}
+  const bool enabled=base_ok(t);
+  const auto edge=[&](bool button,bool& armed,Edge& e){if(!enabled)armed=false;
+   else if(!button)armed=true;else if(armed){++e.id;e.at=t.host_seconds;e.yaw=t.yaw_units;e.pitch=t.pitch_units;
+    e.aim_valid=aim_ok(t)&&!t.native_ui;armed=false;}};
+  edge(t.fire,p.fire_arm,p.snapshot.fire);edge(t.ui_select,p.ui_arm,p.snapshot.ui);edge(t.start,p.start_arm,p.snapshot.start);
++ if(!enabled||!t.native_ui||t.ui_navigation< -1||t.ui_navigation>1)p.navigation_arm=false;
++ else if(!t.ui_navigation)p.navigation_arm=true;
++ else if(p.navigation_arm&&(!p.producer_have||p.previous.ui_navigation!=t.ui_navigation)){
++  ++p.snapshot.navigation.id;p.snapshot.navigation.at=t.host_seconds;p.snapshot.navigation_direction=t.ui_navigation;
++ }
+  p.snapshot.target=t;p.snapshot.have=true;p.previous=t;p.producer_have=true;
+ }
+ void Consumer::reset(std::uint64_t){auto& p=*impl_;const std::lock_guard<std::mutex> lock(p.mutex);
+- ++p.snapshot.reset;p.snapshot.have=false;p.producer_have=false;p.fire_arm=p.ui_arm=p.start_arm=false;}
++ ++p.snapshot.reset;p.snapshot.have=false;p.producer_have=false;p.fire_arm=p.ui_arm=p.start_arm=p.navigation_arm=false;}
+ dc_xr::InputSink Consumer::sink()noexcept{return {this,[](void* p,const dc_xr::Target& t){static_cast<Consumer*>(p)->submit(t);},
+  [](void* p,std::uint64_t e){static_cast<Consumer*>(p)->reset(e);}};}
+ Packet Consumer::poll(double now,const Feedback& f){Snapshot copy;{const std::lock_guard<std::mutex> lock(impl_->mutex);copy=impl_->snapshot;}
+--- a/core/dreamcast/dc_mouse_input.h
++++ b/core/dreamcast/dc_mouse_input.h
+@@ -15,7 +15,7 @@
+ struct GainHint {bool verified{};std::uint64_t signature{};double yaw{},pitch{};};
+ GainHint source_hint(const SourceContext&)noexcept;
+ struct Feedback {
+- bool code_verified{},mouse_device{};
++ bool code_verified{},mouse_device{},menu_navigation_verified{};
+  std::uint64_t generation{},poll_sequence{};
+  double native_seconds{},yaw{},pitch{};
+  double yaw_min{-5500},yaw_max{5500},pitch_min{-4300},pitch_max{4300};
+@@ -23,7 +23,7 @@
+ };
+ enum class Status {NoTarget,InvalidContext,StaleTarget,Unreachable,UnsupportedGain,WaitingAck,AckTimeout,Ready,UiClickOnly,DuplicatePoll,ExplicitStart};
+ struct Packet {
+- int dx{},dy{};std::uint8_t pressed{};
++ int dx{},dy{},wheel{};std::uint8_t pressed{};
+  // fresh_fire acknowledges a fresh native Left packet, not alignment, a hit,
+  // guest ammunition consumption or physical/visual shot confirmation.
+  Status status{Status::NoTarget};bool aligned{},reachable{},fresh_fire{},ui_pointing_unverified{};
+--- a/core/dreamcast/dc_mouse_native.cpp
++++ b/core/dreamcast/dc_mouse_native.cpp
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ #include "dc_mouse_native.h"
+ #include "dc_mouse_input_source.h"
++#include "dc_mouse_menu_source.h"
+ #include "cfg/option.h"
+ #include "emulator.h"
+ #include "hw/sh4/sh4_mem.h"
+@@ -86,12 +87,14 @@
+  feedback.generation=generation;feedback.poll_sequence=++s.sequence;
+  feedback.native_seconds=sh4_sched_now64()/double(SH4_MAIN_CLOCK);
+  feedback.yaw=facts.yaw;feedback.pitch=facts.pitch;feedback.gain=source_hint(facts.context);
++ const auto menu=read_menu_source(ram,RamBytes,settings.content.gameId);
++ feedback.menu_navigation_verified=menu.code_verified&&menu.mouse_present;
+  feedback.yaw_min=-double(facts.yaw_limit);feedback.yaw_max=facts.yaw_limit;
+  feedback.pitch_min=-double(facts.pitch_limit);feedback.pitch_max=facts.pitch_limit;
+  auto packet=s.consumer.poll(host_seconds(),feedback);
+  if(generation!=s.generation.load(std::memory_order_acquire)||!s.enabled.load(std::memory_order_acquire))packet={};
+  buttons=std::uint8_t((buttons|OwnedButtons)&~packet.pressed);
+- x=packet.dx;y=packet.dy;wheel=0;
++ x=packet.dx;y=packet.dy;wheel=packet.wheel;
+  return true;
+ }
+ }}
+--- a/core/dreamcast/dc_xr_bridge.cpp
++++ b/core/dreamcast/dc_xr_bridge.cpp
+@@ -6,7 +6,7 @@
+  if(sink.user==sink_.user&&sink.submit==sink_.submit&&sink.reset==sink_.reset)return;
+  invalidate();sink_=sink;have_previous_=false;previous_seconds_=-1;invalidate();
+ }
+-void InputBridge::invalidate(){armed_=false;++epoch_;if(sink_.reset)sink_.reset(sink_.user,epoch_);}
++void InputBridge::invalidate(){armed_=navigation_armed_=false;++epoch_;if(sink_.reset)sink_.reset(sink_.user,epoch_);}
+ bool InputBridge::submit(Target target,Target* emitted){
+  const bool clock=std::isfinite(target.host_seconds)&&target.host_seconds>=0;
+  if(!have_previous_||focused_!=target.focused||tracked_!=target.tracked||menu_!=target.menu||native_ui_!=target.native_ui||hand_!=target.hand||
+@@ -14,6 +14,9 @@
+  have_previous_=true;focused_=target.focused;tracked_=target.tracked;menu_=target.menu;native_ui_=target.native_ui;hand_=target.hand;
+  previous_seconds_=clock?target.host_seconds:-1;
+  const bool enabled=clock&&target.focused&&target.tracked&&!target.menu&&(target.hand==0||target.hand==1);
++ if(!enabled||!target.native_ui||target.ui_navigation< -1||target.ui_navigation>1)navigation_armed_=false;
++ else if(!target.ui_navigation)navigation_armed_=true;
++ if(!enabled||!target.native_ui||!navigation_armed_)target.ui_navigation=0;
+  if(!enabled)armed_=false;
+  const bool fresh=armed_;
+  if(enabled&&!target.fire&&!target.ui_select&&!target.start)armed_=true;
+@@ -38,7 +41,7 @@
+  target.ui_select=enabled&&fresh&&target.point_valid&&target.native_ui&&target.ui_select;
+  target.start=enabled&&fresh&&target.start;
+  target.epoch=epoch_;
+- if(!sink_.submit){target.fire=target.ui_select=target.start=false;if(emitted)*emitted=target;return false;}
++ if(!sink_.submit){target.fire=target.ui_select=target.start=false;target.ui_navigation=0;if(emitted)*emitted=target;return false;}
+  if(emitted)*emitted=target;
+  sink_.submit(sink_.user,target);return true;
+ }
+--- a/core/dreamcast/dc_xr_bridge.h
++++ b/core/dreamcast/dc_xr_bridge.h
+@@ -10,13 +10,14 @@
+  // point_valid is only an actual endpoint. A valid direction permits native aim
+  // and a legitimate miss without inventing a laser/reticle endpoint.
+  bool point_valid{},direction_valid{},native_ui{},ui_select{},fire{},start{},focused{},tracked{},menu{};
++ int ui_navigation{}; // Native menu wheel intent: -1 Up,0 neutral,+1 Down; UI only.
+  int hand{1};uint64_t epoch{};
+ };
+ // Registration and submission are render-thread operations. The consumer owns
+ // user and must unregister before destroying it. No raw mouse/Maple writes here.
+ struct InputSink {void* user{};void(*submit)(void*,const Target&){};void(*reset)(void*,uint64_t){};};
+ class InputBridge {
+- InputSink sink_{};uint64_t epoch_{1};bool armed_{},have_previous_{};
++ InputSink sink_{};uint64_t epoch_{1};bool armed_{},navigation_armed_{},have_previous_{};
+  bool focused_{},tracked_{},menu_{},native_ui_{};int hand_{-1};double previous_seconds_{-1};
+ public:
+  void set_sink(InputSink);
+--- /dev/null
++++ b/core/dreamcast/dc_menu_navigation.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <cmath>
++namespace silent_scope { namespace dc_mouse {
++// Native mouse wheel: -1 is Up, +1 Down. A fresh neutral sample is required
++// after every context reset. The mailbox supplies physical direction edges;
++// this native-poll policy owns repeat and never accumulates missed notches.
++class MenuNavigation {
++ bool armed_{};int held_{};double repeat_at_{-1},last_{-1};
++public:
++ void reset()noexcept{armed_=false;held_=0;repeat_at_=last_=-1;}
++ int poll(double now,int latest,bool fresh,int edge)noexcept{
++  if(!std::isfinite(now)||now<0||(last_>=0&&now<last_)||latest< -1||latest>1||edge< -1||edge>1){reset();return 0;}
++  last_=now;
++  if(!latest){armed_=true;held_=0;repeat_at_=-1;}
++  if(fresh&&edge&&armed_){held_=latest==edge?edge:0;repeat_at_=held_?now+.35:-1;return edge;}
++  if(!armed_||!held_||latest!=held_){held_=0;repeat_at_=-1;return 0;}
++  if(now>=repeat_at_){repeat_at_=now+.15;return held_;}
++  return 0;
++ }
++};
++}}

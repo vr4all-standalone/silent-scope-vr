@@ -1,0 +1,44 @@
+--- a/core/rend/vr/xr_labels.cpp
++++ b/core/rend/vr/xr_labels.cpp
+@@ -65,7 +65,7 @@
+                         kind>=2?"Menu - Focus":kind==0&&hand==0?"X - Focus":"A - Focus"});
+                     labels.push_back({controllers::Trigger,"Trigger - Fire / Select"});
+                     if(sim)labels.push_back({controllers::Grip,"Grip - Rear hold"});
+-                    if(kind!=2)labels.push_back({controllers::Stick,"Up/Down - Zoom | Click - Laser/crosshair"});
++                    labels.push_back({controllers::Stick,kind==2?"Pad Up/Down - Scope zoom":"Up/Down - Zoom | Click - Laser/crosshair"});
+                 }else{
+                     labels.push_back({hand==0?controllers::Y:controllers::B,
+                         kind>=2?"Hold Pad click - Settings":kind==0&&hand==0?"Hold Y - Settings":"Hold B - Settings"});
+@@ -73,7 +73,7 @@
+                     labels.push_back({controllers::Grip,sim?"Grip - Front hold":"Grip - Support"});
+                     if(kind!=2)labels.push_back({controllers::Stick,"Click - Recenter"});
+                 }
+-                if(hand==0)labels.push_back({controllers::Menu,"Menu - Settings"});
++                if(hand==0&&kind<2)labels.push_back({controllers::Menu,kind==0?"Menu - Settings":"Pad squeeze - Settings"});
+             }
+         }
+         return result;
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -561,7 +561,9 @@
+         }
+         p.rows.push_back(std::move(r));
+     }
+-    p.footer="Aim and pull trigger | B / Y to go back";
++    p.footer=howToPlayOn()&&dc::simulation_mode()
++        ?"Release both grips to stow the rifle at your chest. B / Y goes back."
++        :"Aim and pull trigger | Stick to adjust | B / Y to go back";
+     const auto saveError=silent_scope::dc_persistence::last_error();
+     if(!saveError.empty())p.footer="Settings not saved: "+saveError;
+     return p;
+@@ -597,7 +599,9 @@
+     const auto& row=panel.rows[ssFocus.index];
+     if(row.dim)return;
+     const int action=rows[ssFocus.index];
+-    if(action==AdvancedGun||action==AdvancedWorld){
++    if(action==Laser&&!ssFocus.direction){
++        dc::select_laser_choice(ssFocus.choice>=0?ssFocus.choice:(dc::laser_choice()+1)%4);
++    }else if(action==AdvancedGun||action==AdvancedWorld){
+         ssPage=action==AdvancedGun?SsPage::GunAdvanced:SsPage::WorldAdvanced;
+         ssFocus={};
+     }else if(action==ResetDefaults||action==Quit){

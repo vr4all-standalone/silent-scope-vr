@@ -1,0 +1,40 @@
+--- a/core/dreamcast/dc_hud.h
++++ b/core/dreamcast/dc_hud.h
+@@ -133,7 +133,7 @@
+         const bool ranking=range_ranking_glyph(x,y,u,v);
+         const bool caption=stadium_caption_glyph(x,y,glyph);
+         const bool dossier=a.col[0]==0&&stadium_dossier_glyph(x,y,glyph);
+-        const bool white=(indoor_digit||ranking||caption)&&a.col[1]==255;
++        const bool white=(indoor_digit||ranking||caption)&&a.col[0]==255&&a.col[1]==255;
+         const uint8_t red=dossier?0:255,green=dossier||white?255:0,blue=white?255:0,alpha=dossier?191:255;
+         unsigned corners=0;
+         for(const auto* vertex:{&a,&b,&c}){
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -3930,11 +3930,11 @@
+         panel.lines = {
+             { "How to play Silent Scope", .077f, violet },
+             { left ? "Point at menus and press X, Y or Trigger." : "Point at menus and press A, B or Trigger.", .046f, cream },
+-            { "Grip a rifle in front of you. Grip the fore-end to aim with both hands.", .043f, cream },
++            { "Grip to pick up a rifle. Grip the fore-end for two-hand aim.", .043f, cream },
+             { left ? "Left stick up/down zooms. Hold X for Focus Mode." : "Right stick up/down zooms. Hold A for Focus Mode.", .043f, cream },
+-            { "Arcade reloads automatically. Simulation uses a manual bolt and magazine.", .042f, muted },
+-            { "Use Trigger to grab the bolt. Lift, pull back, push forward, then lock it.", .042f, muted },
+-            { "When empty, use Trigger to swap in a fresh magazine.", .042f, muted },
++            { "Arcade: auto reload. Simulation: manual bolt and magazine.", .042f, muted },
++            { "Simulation bolt: grab with Trigger, lift, pull, push, lock.", .042f, muted },
++            { "Empty magazine: swap it with Trigger.", .042f, muted },
+         };
+     }
+ 	const bool showPanel = panel.brand || !panel.lines.empty();
+@@ -4229,8 +4229,8 @@
+ 		if (!launchSplash.active())
+ 			NOTICE_LOG(RENDERER, "XR: VR4ALL splash finished");
+ 	}
+-    if(submitted&&render&&ok&&focused&&ssGuideVisible)
+-        ssLaunchGuide.presented(std::chrono::nanoseconds(frameState.predictedDisplayPeriod));
++	if (submitted && render && ok && focused && ssGuideVisible)
++		ssLaunchGuide.presented(std::chrono::nanoseconds(frameState.predictedDisplayPeriod));
+ 	return render && ok;
+ }
+ 

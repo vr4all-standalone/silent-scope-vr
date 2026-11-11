@@ -1,0 +1,54 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2187,16 +2187,20 @@
+     const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
+         &&config::VrReproject&&!gles_vr_showing_framebuffer();
+     const auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
++    ss::dc_native_menu::MainMenuProof mainMenuProof;
++    const bool mainMenuVerified=inputDomain==ss::dc_ui::Domain::NativeUi&&ctx&&
++        mainMenuProof.configure(settings.content.gameId,*ctx);
+     static auto previousInputDomain=ss::dc_ui::Domain::Unknown;
+-    if(inputDomain!=previousInputDomain){
+-        previousInputDomain=inputDomain;
++    static bool previousMainMenu{};
++    if(inputDomain!=previousInputDomain||mainMenuVerified!=previousMainMenu){
++        previousInputDomain=inputDomain;previousMainMenu=mainMenuVerified;
+         // Unknown must not masquerade as physical release then replay a held
+         // trigger when World returns. Keep raw trigger hysteresis, rearm bridge.
+         ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssSubmittedFireWas=false;
+     }
+     const bool native3d=inputDomain==ss::dc_ui::Domain::World;
+     const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
+-    target.native_ui=nativeUi;
++    target.native_ui=nativeUi;target.ui_main_menu=mainMenuVerified;
+     // Cancel old generation/owner state before solving this frame's pose.
+     if(ssPoseHand!=target.hand){resetSilentScopePose();ssPoseHand=target.hand;}
+     XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
+@@ -2256,9 +2260,15 @@
+             if(nativeUi)hit=aimAtFlatScreen(o,d,screen,dist);
+             else if(native3d)hit=aimAtScene(*ctx,o,d,screen,dist,&native);
+             const bool scene=aimHow&&strcmp(aimHow,"3D")==0&&dist>0&&dist<10000;
+-            // Only a verified flat native UI frame permits an unpositioned
+-            // confirmation click. Unknown/unowned/Original3D is never UI.
+-            if(target.native_ui){native=o+d*dist;target.point_valid=hit&&dist>0;target.ui_select=pull;}
++            // Generic verified flat notices retain their confirmation.
++            // Main Menu additionally requires a verified item hit and ACK.
++            if(target.native_ui){
++                native=o+d*dist;target.point_valid=hit&&dist>0;target.ui_select=pull;
++                // Pixel bounds come from the verified native glyph mesh.
++                // A miss remains Main Menu, never an unpositioned click.
++                if(target.ui_main_menu&&target.point_valid)
++                    target.ui_pointer_item=mainMenuProof.hit(*ctx,screen.x*640.f,screen.y*480.f);
++            }
+             // Native gameplay HUD never changes the native input domain. If
+             // the generic picker reports a HUD hit, keep only the barrel ray:
+             // no false marker on the HUD, and no loss of legitimate sky shots.
+@@ -2312,7 +2322,7 @@
+         if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.45f,-1.5f)),tex,.022f*w/h,.022f);
+     }
+     if(menuHowToPlay){
+-        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Either stick Up/Down: Native menus", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Aim smoothing: VR settings", "Left Menu: Settings"};
++        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Aim smoothing: VR Menu (- / +)", "Left Menu: Settings"};
+         for(int n=0;n<7;++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
+             if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.2f-.075f*n,-1.4f)),tex,.025f*w/h,.025f);}
+     }

@@ -1,0 +1,91 @@
+--- a/core/audio/audiostream.h
++++ b/core/audio/audiostream.h
+@@ -63,6 +63,7 @@
+ void InitAudio();
+ void TermAudio();
+ void WriteSample(s16 right, s16 left);
++void PlaySilentScopeEjection();
+ 
+ void StartAudioRecording(bool eight_khz);
+ u32 RecordAudio(void *buffer, u32 samples);
+--- a/core/audio/audiostream.cpp
++++ b/core/audio/audiostream.cpp
+@@ -1,6 +1,10 @@
+ #include "audiostream.h"
+ #include "cfg/option.h"
+ #include "emulator.h"
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <cmath>
+ 
+ static void registerForEvents();
+ 
+@@ -48,8 +52,40 @@
+ 	return nullptr;
+ }
+ 
++namespace {
++constexpr int EjectionSamples = 6615; // 150 ms at the Dreamcast's 44.1 kHz.
++std::atomic<int> ejectionRequest{0}; // 1 plays, -1 cancels.
++unsigned ejectionCursor = EjectionSamples;
++const auto ejectionSound = [] {
++    std::array<s16, EjectionSamples> samples{};
++    for (unsigned i = 0; i < samples.size(); ++i) {
++        const double t = i / 44100.0;
++        constexpr double tau = 6.283185307179586;
++        const double attack = std::min(t / .001, 1.0);
++        const double ring = .60 * std::sin(tau * 2210 * t) * std::exp(-33 * t)
++                          + .28 * std::sin(tau * 3410 * t) * std::exp(-58 * t)
++                          + .12 * std::sin(tau * 5090 * t) * std::exp(-115 * t);
++        samples[i] = static_cast<s16>(8500 * attack * ring);
++    }
++    return samples;
++}();
++}
++
++void PlaySilentScopeEjection()
++{
++    ejectionRequest.store(1, std::memory_order_relaxed);
++}
++
+ void WriteSample(s16 r, s16 l)
+ {
++    if (ejectionRequest.load(std::memory_order_relaxed) != 0) {
++        const int request = ejectionRequest.exchange(0, std::memory_order_relaxed);
++        ejectionCursor = request > 0 ? 0 : EjectionSamples; }
++    if (ejectionCursor < ejectionSound.size()) {
++        const int ching = ejectionSound[ejectionCursor++];
++        r = static_cast<s16>(std::clamp(int(r) + ching, -32768, 32767));
++        l = static_cast<s16>(std::clamp(int(l) + ching, -32768, 32767));
++    }
+ 	Buffer[writePtr].r = r * config::AudioVolume.dbPower();
+ 	Buffer[writePtr].l = l * config::AudioVolume.dbPower();
+ 
+@@ -106,6 +142,8 @@
+ 
+ void TermAudio()
+ {
++    ejectionRequest.store(-1, std::memory_order_relaxed);
++    // The sample producer resets its own cursor.
+ 	if (currentBackend == nullptr)
+ 		return;
+ 
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -32,6 +32,7 @@
+ #include "dreamcast/rifle_recoil.h"
+ #include "dreamcast/rifle_steady_aim.h"
+ #include "dreamcast/rifle_simulation.h"
++#include "audio/audiostream.h"
+ #include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+@@ -2394,6 +2395,7 @@
+             if(ssSimulation.ejections()!=previousEjections){
+                 ssEjectionPose=glm::translate(ssRifleModel,ss::RifleSimulation::EjectionPort);
+                 ssEjectedAt=target.host_seconds;
++                PlaySilentScopeEjection();
+             }
+             ssMagazineInHand=glm::translate(hand.model,-ss::RifleSimulation::MagazineBase);
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}

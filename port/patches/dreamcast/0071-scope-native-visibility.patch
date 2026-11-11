@@ -1,0 +1,135 @@
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -16,6 +16,7 @@
+ #include "dreamcast/dc_camera_probe.h"
+ #include "dreamcast/dc_camera_focal_probe.h"
+ #include "dreamcast/dc_scope_camera.h"
++#include "dreamcast/dc_scope_visibility.h"
+ #include "dreamcast/dc_camera_geometry_probe.h"
+ #include "dreamcast/dc_lens_boundary_probe.h"
+ #include "dreamcast/dc_projection_probe.h"
+@@ -81,6 +82,7 @@
+         if(const auto observer=nativeWiderObserver.load(std::memory_order_acquire))observer(known,factor,revision);
+ }
+ static bool cameraFocalOwned;
++static bool scopeVisibilityOwned;
+ static unsigned cameraFocalRecords;
+ static std::array<int,3> cameraFocalPhase{{-1,-1,-1}};
+ static std::array<double,3> cameraFocalLog{{-1,-1,-1}};
+@@ -89,8 +91,66 @@
+     return FocalSetterProbe::guarded(settings.content.gameId,trap,
+         [](u32 address){return ReadMem32_nommu(address);},[](u32 address){return ReadMem16_nommu(address);});
+ }
++static bool scopeVisibilityGuard(bool trap)
++{
++    return settings.content.gameId=="T9507N"&&ScopeVisibilitySite::guarded(trap,
++        [](u32 a){return ReadMem32_nommu(a);},[](u32 a){return ReadMem16_nommu(a);});
++}
++static void restoreScopeVisibilityTrap()
++{
++    if(scopeVisibilityOwned&&scopeVisibilityGuard(true)){
++        bm_RamWriteAccess(ScopeVisibilitySite::TargetPc);
++        WriteMem16_nommu(ScopeVisibilitySite::TargetPc,ScopeVisibilitySite::OriginalOpcode);
++        icache.Invalidate();
++    }
++    scopeVisibilityOwned=false;
++}
++static void ensureScopeVisibilityTrap()
++{
++    if(scopeVisibilityOwned||!cameraFocalOwned||!scopeVisibilityGuard(false))return;
++    bm_RamWriteAccess(ScopeVisibilitySite::TargetPc);
++    WriteMem16_nommu(ScopeVisibilitySite::TargetPc,ScopeVisibilitySite::TrapOpcode);
++    icache.Invalidate();scopeVisibilityOwned=true;
++}
++static bool handleScopeVisibilityTrap(Sh4Context* ctx)
++{
++    if(!scopeVisibilityOwned&&!scopeVisibilityGuard(true))return false;
++    ScopeVisibilityFacts facts;
++    facts.mode=ReadMem32_nommu(0x8c1b0114);
++    facts.frustum=ctx->r[14];facts.live_return=ctx->pr;
++    const u32 sp=ctx->r[15];
++    const bool stackKnown=sp>=0x8c000000&&sp<=0x8cffffb8;
++    if(stackKnown){facts.outer_return=ReadMem32_nommu(sp+0x24);facts.original_span=ReadMem32_nommu(sp+0x40);}
++    facts.scope_source=ReadMem32_nommu(ScopeSourceAddress);
++    facts.sdk_focal=ReadMem32_nommu(0x8cd1f9c0);
++    facts.code_guard=stackKnown&&cameraFocalGuard(true)&&scopeVisibilityGuard(true);
++    if(facts.frustum==ScopeVisibilitySite::Frustum)
++        for(unsigned i=0;i<4;++i)facts.planes[i]=int16_t(ReadMem16_nommu(facts.frustum+0x18+i*2));
++#if defined(_WIN32) && !defined(USE_OPENXR) && !defined(LIBRETRO)
++    // Paired native checkpoint control; never part of a physical XR session.
++    if(const char* control=std::getenv("SILENT_SCOPE_DC_SCOPE_VISIBILITY_CONTROL"))
++        if(std::strcmp(control,"1")==0)facts.code_guard=false;
++#endif
++    const auto decision=decide_scope_visibility(facts);
++    if(decision.applied)
++        for(unsigned i=0;i<4;++i)WriteMem16_nommu(facts.frustum+0x18+i*2,uint16_t(decision.planes[i]));
++    // Replay the replaced MOV.W, including its signed extension into R0.
++    // PC remains entry+2; native code regenerates bounds from the new planes.
++    OpPtr[ScopeVisibilitySite::OriginalOpcode](ctx,ScopeVisibilitySite::OriginalOpcode);
++    static const bool probe=std::getenv("SILENT_SCOPE_DC_SCOPE_VISIBILITY_PROBE")!=nullptr;
++    static unsigned records{};static double lastAt=-1;
++    const double now=double(sh4_sched_now64())/SH4_MAIN_CLOCK;
++    if(probe&&facts.mode==1&&facts.original_span==200&&records<32&&(lastAt<0||now-lastAt>=.5)){
++        std::fprintf(stderr,"SS_SCOPE_VISIBILITY native_s=%.6f guard=%d caller=%08x source=%08x sdk=%08x span=%u scale=%.2f applied=%d stock=%d,%d,%d,%d effective=%d,%d,%d,%d replay_r0=%d\n",
++            now,int(facts.code_guard),facts.outer_return,facts.scope_source,facts.sdk_focal,facts.original_span,decision.scale,int(decision.applied),
++            facts.planes[0],facts.planes[1],facts.planes[2],facts.planes[3],decision.planes[0],decision.planes[1],decision.planes[2],decision.planes[3],int(ctx->r[0]));
++        lastAt=now;++records;
++    }
++    return true;
++}
+ static void restoreSilentScopeFocalTrap()
+ {
++    restoreScopeVisibilityTrap();
+     if(cameraFocalOwned&&cameraFocalGuard(true)){
+         bm_RamWriteAccess(FocalSetterProbe::TargetPc);
+         WriteMem16_nommu(FocalSetterProbe::TargetPc,FocalSetterProbe::OriginalOpcode);
+@@ -101,12 +161,13 @@
+ static void resetSilentScopeFocalTrap(Event event)
+ {
+     nativeWiderApplication.reset();
+-    if(!cameraFocalProbe().enabled()&&!cameraFocalOwned)return;
++    if(!cameraFocalProbe().enabled()&&!cameraFocalOwned&&!scopeVisibilityOwned)return;
+     if(event==Event::Terminate||settings.content.gameId!="T9507N"){
+-        cameraFocalOwned=false;cameraFocalRecords=0;cameraFocalPhase={{-1,-1,-1}};cameraFocalLog={{-1,-1,-1}};return;
++        scopeVisibilityOwned=false;cameraFocalOwned=false;cameraFocalRecords=0;cameraFocalPhase={{-1,-1,-1}};cameraFocalLog={{-1,-1,-1}};return;
+     }
+     if(event==Event::DiskChange)restoreSilentScopeFocalTrap();
+     if(ReadMem16_nommu(FocalSetterProbe::TargetPc)!=FocalSetterProbe::TrapOpcode)cameraFocalOwned=false;
++    if(ReadMem16_nommu(ScopeVisibilitySite::TargetPc)!=ScopeVisibilitySite::TrapOpcode)scopeVisibilityOwned=false;
+     cameraFocalRecords=0;cameraFocalPhase={{-1,-1,-1}};cameraFocalLog={{-1,-1,-1}};
+ }
+ static void ensureSilentScopeFocalTrap(bool rtt,double now)
+@@ -119,16 +180,19 @@
+     }
+     // Production is active for the complete VR process. Diagnostic-only runs
+     // preserve the stock native40 checkpoint and bounded43..56 code window.
+-    if((!production&&now<43)||cameraFocalOwned)return;
++    if(!production&&now<43)return;
++    if(cameraFocalOwned){ensureScopeVisibilityTrap();return;}
+     if(!cameraFocalGuard(false)||ReadMem32_nommu(FocalSetterProbe::SourceAddress)!=0x440ac000||ReadMem32_nommu(0x8c1b0114)!=0)return;
+     bm_RamWriteAccess(FocalSetterProbe::TargetPc);
+     WriteMem16_nommu(FocalSetterProbe::TargetPc,FocalSetterProbe::TrapOpcode);
+-    icache.Invalidate();cameraFocalOwned=true;
++    icache.Invalidate();cameraFocalOwned=true;ensureScopeVisibilityTrap();
+     std::fprintf(stderr,"DC_CAMERA_FOCAL installed native=%.9f factor=%d pc=%08x\n",now,cameraFocalProbe().factor(),FocalSetterProbe::TargetPc);
+ }
+ bool handle_camera_focal_trap(Sh4Context* ctx,uint32_t guestPc)
+ {
+-    if(guestPc!=FocalSetterProbe::TargetPc||settings.content.gameId!="T9507N")return false;
++    if(settings.content.gameId!="T9507N")return false;
++    if(guestPc==ScopeVisibilitySite::TargetPc)return handleScopeVisibilityTrap(ctx);
++    if(guestPc!=FocalSetterProbe::TargetPc)return false;
+     const bool codeGuard=cameraFocalGuard(true);
+     if(!cameraFocalOwned&&!codeGuard)return false;
+     // DRC shop_ifb sets PC=entry+2 and spills every guest register. Original
+@@ -148,6 +212,10 @@
+     if (cameraFocalProbe().enabled() && std::getenv("SILENT_SCOPE_DC_NATIVE_SCOPE_PROBE")) {
+         scopeRequested = true;
+         scopeScale = now < 46 ? .2f : now < 50 ? 1.f : now < 54 ? 2.f : 5.f;
++        if(const char* value=std::getenv("SILENT_SCOPE_DC_SCOPE_VISIBILITY_SCALE")){
++            char* end=nullptr;const float supplied=std::strtof(value,&end);
++            if(end!=value&&!*end&&(supplied==.2f||supplied==.5f))scopeScale=supplied;
++        }
+     }
+ #endif
+     const auto scope = decide_scope_camera(scopeScale,loaded,caller,mode,ctx->fpscr.full,

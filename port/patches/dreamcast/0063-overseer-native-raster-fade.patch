@@ -1,0 +1,152 @@
+--- a/core/rend/vr_reproject.h
++++ b/core/rend/vr_reproject.h
+@@ -39,6 +39,7 @@
+ 	// Comfort zone in the headset (see comfortScale): metres per game unit, distance the
+ 	// pull-back starts at, closest distance (metres). All 0 when off.
+ 	glm::vec3 comfort { 0.f };
++	glm::vec3 nativeRaster {1.f,1.f,0.f};
+ 	float worldZoom = 1.f; // world XY only; the frame's shared render/aim factor
+ 	float hudSize = 1.f; // only native gameplay overlay XY, never depth or UV
+ };
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -2631,6 +2631,7 @@
+ 	params.comfort = glm::vec3(0.f);
+ 	params.worldZoom = 1.f; // RTT, flat and non-XR never inherit world zoom
+ 	params.hudSize = 1.f; // reset every pass and eye, including RTT and inactive views
++    params.nativeRaster=glm::vec3(1.f,1.f,0.f);
+ 
+ 	const float zMax = ctx.fZ_max > 0.f && std::isfinite(ctx.fZ_max) ? ctx.fZ_max : 1.f;
+ 	const float zNear = NearFraction / zMax;
+@@ -2670,6 +2671,8 @@
+ 		params.viewProj = eye->viewProj;
+ 		params.worldZoom = xr::gameZoomFactor();
+ 		params.comfort = comfortParams();
++        if(silentScope&&silent_scope::dc_settings::wider_view_mode()==2&&ctx.dcLens.factor==3.f)
++            params.nativeRaster=glm::vec3(submittedCamera.stockTan,1.f);
+ 		return params;
+ 	}
+ 
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -108,6 +108,7 @@
+ uniform highp vec3 vrComfort;
+ uniform highp float vrHudSize;
+ uniform highp float vrWorldZoom;
++uniform highp vec3 vrNativeRaster;
+ #endif
+ 
+ /* Vertex input */
+@@ -121,6 +122,9 @@
+ out highp vec3 vtx_uv;
+ #if VR_REPROJECT == 1
+ out highp vec3 vtx_native_canvas;
++#if DIV_POS_Z == 1
++out highp vec4 vtx_nativeRaster;
++#endif
+ #endif
+ 
+ void main()
+@@ -128,6 +132,9 @@
+ 	highp vec4 vpos = ndcMat * in_pos;
+ #if VR_REPROJECT == 1
+     vtx_native_canvas = vec3(0.0);
++#if DIV_POS_Z == 1
++    vtx_nativeRaster=vec4(0.0);
++#endif
+ #endif
+ 	vtx_base = in_base;
+ 	vtx_offs = in_offs;
+@@ -174,6 +181,7 @@
+ 		}
+ 		else
+ 		{
++            vtx_nativeRaster=vec4(vpos.xy*vrTan/max(vrNativeRaster.xy,vec2(0.00001)),vpos.w,1.0);
+ 			highp vec3 p = vec3(vpos.xy * vrTan, -vpos.w);
+ 			// Comfort: what comes closer than vrComfort.y metres in front of you (a zombie in
+ 			// your face) is pulled back along the line of sight, smoothly, to no closer than
+@@ -228,6 +236,10 @@
+ in highp vec3 vtx_uv;
+ #if VR_REPROJECT == 1
+ in highp vec3 vtx_native_canvas;
++#if DIV_POS_Z == 1
++uniform highp vec3 vrNativeRaster;
++in highp vec4 vtx_nativeRaster;
++#endif
+ #endif
+ 
+ lowp float fog_mode2(highp float w)
+@@ -452,6 +464,15 @@
+ 	color = clamp(floor(color * 255. + dv) / 255., 0., 1.);
+ #endif
+ #endif
++#if VR_REPROJECT == 1 && DIV_POS_Z == 1
++    if(vrNativeRaster.z>0.5&&vtx_nativeRaster.w>0.5){
++        highp vec2 ndc=vtx_nativeRaster.xy/max(vtx_nativeRaster.z,0.00001);
++        highp vec2 outside=max(abs(ndc)-vec2(1.0),vec2(0.0))*0.5;
++        highp float visibility=1.0-smoothstep(0.0,0.25,length(outside));
++        if(vtx_nativeRaster.z<=0.0)visibility=0.0;
++        color.rgb*=visibility;
++    }
++#endif
+ 	gl_FragColor = color;
+ }
+ )";
+@@ -950,6 +971,7 @@
+ 	s->vrComfort = glGetUniformLocation(s->program, "vrComfort");
+ 	s->vrHudSize = glGetUniformLocation(s->program, "vrHudSize");
+ 	s->vrWorldZoom = glGetUniformLocation(s->program, "vrWorldZoom");
++    s->vrNativeRaster=glGetUniformLocation(s->program,"vrNativeRaster");
+ 	s->ditherDivisor = glGetUniformLocation(s->program, "ditherDivisor");
+ 	s->texSize = glGetUniformLocation(s->program, "texSize");
+ 
+@@ -982,6 +1004,7 @@
+ 	gl.modvol_shader.vrComfort = glGetUniformLocation(gl.modvol_shader.program, "vrComfort");
+ 	gl.modvol_shader.vrHudSize = glGetUniformLocation(gl.modvol_shader.program, "vrHudSize");
+ 	gl.modvol_shader.vrWorldZoom = glGetUniformLocation(gl.modvol_shader.program, "vrWorldZoom");
++    gl.modvol_shader.vrNativeRaster=glGetUniformLocation(gl.modvol_shader.program,"vrNativeRaster");
+ 	gl.modvol_shader.sp_ShaderColor = glGetUniformLocation(gl.modvol_shader.program, "sp_ShaderColor");
+ 	gl.modvol_shader.depth_scale = glGetUniformLocation(gl.modvol_shader.program, "depth_scale");
+ 
+@@ -1310,6 +1333,7 @@
+ 		ShaderUniforms.vrComfort = vrParams.comfort;
+ 		ShaderUniforms.vrHudSize = vrParams.hudSize;
+ 		ShaderUniforms.vrWorldZoom = vrParams.worldZoom;
++        ShaderUniforms.vrNativeRaster=vrParams.nativeRaster;
+ 	}
+ 
+ 	ShaderUniforms.depth_coefs[0] = 2.f / vtx_max_fZ;
+--- a/core/rend/gles/gles.h
++++ b/core/rend/gles/gles.h
+@@ -65,6 +65,7 @@
+ 	GLint vrComfort;
+ 	GLint vrHudSize;
+ 	GLint vrWorldZoom;
++	GLint vrNativeRaster;
+ 	GLint palette_index;
+ 	GLint ditherDivisor;
+ 	GLint texSize;
+@@ -272,6 +273,7 @@
+ 		GLint vrComfort;
+ 	GLint vrHudSize;
+ 	GLint vrWorldZoom;
++	GLint vrNativeRaster;
+ 	} modvol_shader;
+ 
+ 	struct
+@@ -457,6 +459,7 @@
+ 	glm::vec2 vrTan;
+ 	glm::vec4 vrOverlay;
+ 	float vrWorldZoom = 1.f;
++    glm::vec3 vrNativeRaster{1.f,1.f,0.f};
+ 	float vrHudSize = 1.f;
+ 	glm::vec3 vrComfort;	// world scale, comfort start, comfort minimum (metres); 0: off
+ 	struct {
+@@ -499,6 +502,7 @@
+ 			glUniform2fv(s->vrTan, 1, &vrTan[0]);
+ 		if (s->vrOverlay != -1)
+ 			glUniform4fv(s->vrOverlay, 1, &vrOverlay[0]);
++		if(s->vrNativeRaster!=-1)glUniform3fv(s->vrNativeRaster,1,&vrNativeRaster[0]);
+ 		if (s->vrWorldZoom != -1)
+ 			glUniform1f(s->vrWorldZoom,vrWorldZoom);
+ 		if (s->vrHudSize != -1)

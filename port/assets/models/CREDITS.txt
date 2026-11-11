@@ -1,0 +1,21 @@
+This app includes the following third-party controller models, matching the established VR4ALL lightgun mods. They were not made by the app's authors.
+
+"Meta Quest Left Controller" by declan02530
+  File: controllers/left.glb
+  Licence: CC BY 4.0
+  Link: https://sketchfab.com/3d-models/meta-quest-left-controller-c70d4a544ddf4b5d8155c2edaff6f9de
+  Changes: converted to GLB, battery indicator removed
+
+"Meta Quest Right Controller" by declan02530
+  File: controllers/right.glb
+  Licence: CC BY 4.0
+  Link: https://sketchfab.com/3d-models/meta-quest-right-controller-5221accf9c7842eb9b2d4df2d2e5c545
+  Changes: converted to GLB, battery indicator removed
+
+Licence: https://creativecommons.org/licenses/by/4.0/
+
+Controller files and matching button anchors are unchanged copies of the Confidential Mission VR4ALL bundled assets.
+
+The Silent Scope launch instruction pictures in picture/silent-scope-how-to.png
+are rendered adaptations of these controller models, shown beside the user's
+rifle models. Yellow interaction highlights and left-handed mirroring are added.

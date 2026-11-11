@@ -1,0 +1,152 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -144,6 +144,8 @@
+ ss::RifleScopeStability ssScopeStability;
+ ss::RifleSteadyAim ssSteadyAim;
+ ss::RifleSimulation ssSimulation;
++ss::RifleCarry ssCarry;
++int ssManipulationHand=-1;
+ constexpr float SsAwpScale=1.10f;
+ glm::mat4 ssEjectionPose(1.f);
+ double ssEjectedAt=-1;
+@@ -174,7 +176,7 @@
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
+-    ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
++    ssCarry.reset();ssManipulationHand=-1;ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2288,9 +2290,29 @@
+     const bool stickQueried=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&stickInfo,&nativeStick));
+     target.ui_navigation=ssNativeMenuStick.update_sample({stickQueried,nativeStick.isActive!=0,
+         nativeStick.currentState.x,nativeStick.currentState.y},target.focused&&target.tracked&&nativeUi,target.hand);
+-    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,simulation?ss::RifleForegrip{ss::dc_rifle::awp_foregrip.height*SsAwpScale,ss::dc_rifle::awp_foregrip.front*SsAwpScale,ss::dc_rifle::awp_foregrip.rear*SsAwpScale}:ss::dc_rifle::foregrip});
++    const auto awpGrip=ss::dc_rifle::awp_foregrip;
++    const auto foregrip=simulation?ss::RifleForegrip{awpGrip.height*SsAwpScale,
++        awpGrip.front*SsAwpScale,awpGrip.rear*SsAwpScale}:ss::dc_rifle::foregrip;
++    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,foregrip});
++    const auto head=headPose();
++    const auto belt=glm::translate(glm::mat4(1.f),glm::vec3(head[3]))*
++        glm::mat4_cast(yawOnly(glm::quat_cast(glm::mat3(head))));
++    const bool carryActive=simulation&&native3d&&ssHeadTracked&&originSet;
++    auto carryModel=supported.model;
++    if(carryActive){
++        const float side=target.hand==Right?1.f:-1.f;
++        const auto chest=glm::rotate(glm::translate(belt,glm::vec3(side*.21f,-.36f,-.32f)),
++            side*glm::radians(65.f),glm::vec3(0,1,0));
++        carryModel=ssCarry.update(chest,hands[target.hand].model,hands[1-target.hand].model,
++            supported.model,foregrip,ssGripLatch[target.hand].engaged(),
++            ssGripLatch[1-target.hand].engaged(),supported.supported);
++    }
++    using Hold=ss::RifleCarry::Hold;
++    const bool rearHeld=!simulation||(carryActive&&ssCarry.hold()==Hold::Rear);
++    const bool frontHeld=carryActive&&ssCarry.hold()==Hold::Front;
++    const bool aimTracked=target.tracked&&rearHeld;
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+-        ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
++        ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&aimTracked&&native3d&&supported.valid});
+     if (smoothed.restarted)
+         ssScopeStability.reset();
+     if (smoothed.valid) {
+@@ -2305,10 +2327,11 @@
+         }
+         ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ocular,
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+-        const auto& firingHand=hands[target.hand];
+         ssRifleModel=ssSteadyAim.update(ssRifleModel,ocular,target.host_seconds,
+-            firingHand.grip,firingHand.grip_valid);
++            boolAction(startAction,Right),aimTracked);
++        if(carryActive)ssCarry.remember_aimed_pose(ssRifleModel);
+     } else {
++        if(carryActive)ssRifleModel=carryModel;
+         ssScopeStability.reset();
+         ssSteadyAim.reset();
+     }
+@@ -2343,9 +2366,9 @@
+             aimReportAt=target.host_seconds;aimSamples=aimRestarts=aimInvalid=0;++aimReports;
+         }
+     }
+-    if(supported.supported&&!ssSupported)haptic(1-target.hand,.025f,.25f);
+-    ssSupported=supported.supported;
+-    ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&smoothed.valid&&!menuHowToPlay;
++    if(rearHeld&&supported.supported&&!ssSupported)haptic(1-target.hand,.025f,.25f);
++    ssSupported=(rearHeld&&supported.supported)||frontHeld;
++    ssRifleValid=config::VrXrGun&&native3d&&(smoothed.valid||(carryActive&&!rearHeld))&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     const auto nativeFireSequence=ss::dc_mouse::native_fire_sequence();
+     int nativeAmmo=-1;
+@@ -2390,20 +2413,23 @@
+                 ssSimulationShotAt=-1;
+             }
+         }
+-        const auto& hand=hands[1-target.hand];
+-        ssSupportLeft=target.hand==Right;
+-        const auto head=headPose();
+-        const auto belt=glm::translate(glm::mat4(1.f),glm::vec3(head[3]))*
+-            glm::mat4_cast(yawOnly(glm::quat_cast(glm::mat3(head))));
++        const int manipulator=frontHeld?target.hand:1-target.hand;
++        const auto& hand=hands[manipulator];
++        ssSupportLeft=manipulator==Left;
++        if(manipulator!=ssManipulationHand){
++            ssSimulation.release_hand();ssManipulationTrigger.reset();ssManipulationHand=manipulator;
++        }
+         ssSpareMagazineAnchor=glm::translate(belt,glm::vec3(ssSupportLeft?-.24f:.24f,-.43f,-.32f));
+-        ssMagazineTracked=native3d&&smoothed.valid&&hand.tracked;
++        ssMagazineTracked=carryActive&&hand.tracked;
+         if(ssMagazineTracked){
+             const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3])/SsAwpScale;
+             ssSupportBox=hand.model;
+             const bool nearBelt=glm::distance(glm::vec3(hand.model[3]),glm::vec3(ssSpareMagazineAnchor[3]))<=.14f;
+             const auto previousEjections=ssSimulation.ejections();
+             const int roundsBefore=ssSimulation.rounds();
+-            ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,1-target.hand)),true,nearBelt);
++            if(rearHeld||frontHeld)
++                ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,manipulator)),true,nearBelt);
++            else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
+             if(ssSimulation.rounds()!=roundsBefore)
+                 NOTICE_LOG(INPUT,"SS_AWP reload native=%d simulation=%d",nativeAmmo,ssSimulation.rounds());
+             if(ssSimulation.ejections()!=previousEjections){
+@@ -2415,10 +2441,10 @@
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
+     }
+     const bool gameplayFire=simulation
+-        ? (ssSimulationShotAt>=0&&target.host_seconds-ssSimulationShotAt<.12)||
+-            (pull&&!ssFireWas&&ssSimulation.can_fire()&&nativeAmmo>0&&ssSimulationShotAt<0)
++        ? rearHeld&&((ssSimulationShotAt>=0&&target.host_seconds-ssSimulationShotAt<.12)||
++            (pull&&!ssFireWas&&ssSimulation.can_fire()&&nativeAmmo>0&&ssSimulationShotAt<0))
+         : pull;
+-    target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
++    target.start=boolAction(startAction,Left)||(!native3d&&boolAction(startAction,Right));
+     // Preserve the physical level even when the beam misses or its projection
+     // is unavailable; captured valid hits are independently edge-latched.
+     target.ui_select=nativeUi&&pull;
+@@ -2541,7 +2567,7 @@
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+         ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(SsAwpScale)),true);
+     }
+-    if(ssSimulationSelected&&ssMagazineTracked&&!ssSupported&&!inHand&&!ssSimulation.holding_bolt())
++    if(ssSimulationSelected&&ssMagazineTracked&&ssCarry.hold()!=ss::RifleCarry::Hold::Front&&!ssSupported&&!inHand&&!ssSimulation.holding_bolt())
+         ssRifle->draw_support_box(vp,ssSupportBox);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+@@ -2578,7 +2604,8 @@
+             magazine==Magazine::EmptyInHand?"Release empty magazine":
+             magazine==Magazine::FreshInHand?"Seat magazine below receiver":
+             ssSimulation.rounds()==0?"Grab empty magazine with offhand trigger":
+-            ssSimulation.can_fire()?"Ready":"Offhand trigger: lift, pull, push, lower";
++            ssCarry.hold()==ss::RifleCarry::Hold::Chest?"Grip the rifle at your chest":
++            ssSimulation.can_fire()?"Ready":"Free hand trigger: lift, pull, push, lower";
+         char label[100];
+         std::snprintf(label,sizeof(label),"AWP %d/%d   %s",ssSimulation.rounds(),ss::RifleSimulation::Capacity,instruction);
+         int w=0,h=0;
+@@ -2586,7 +2613,7 @@
+         if(texture&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,-.37f,-1.5f)),texture,.018f*w/h,.018f);
+     }
+     if(menuHowToPlay){
+-        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Scope stability: raise rifle to eyepiece", "Right stick Up / Down: scope zoom", "Left Menu: Settings"};
++        const char* lines[]={"Trigger: Fire / select native screen", "X: Start / Pause   A: Hold Steady Aim", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Simulation: Grip rifle or stow at chest", "Scope stability: raise rifle to eyepiece", "Right stick Up / Down: scope zoom", "Left Menu: Settings"};
+         for(size_t n=0;n<sizeof(lines)/sizeof(lines[0]);++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
+             if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.2f-.075f*n,-1.4f)),tex,.025f*w/h,.025f);}
+     }

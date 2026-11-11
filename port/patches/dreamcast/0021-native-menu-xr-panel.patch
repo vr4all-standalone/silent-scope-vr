@@ -1,0 +1,84 @@
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -23,6 +23,8 @@
+ #include "dreamcast/dc_decoded_lens.h"
+ #include "dreamcast/dc_wider_control.h"
+ #include "dreamcast/dc_ta_ui.h"
++#include "dreamcast/dc_native_panel.h"
++#include "dreamcast/dc_settings.h"
+ #include "hw/sh4/sh4_opcode_list.h"
+ #include "hw/sh4/sh4_interrupts.h"
+ #include "hw/sh4/sh4_core.h"
+@@ -2602,6 +2604,13 @@
+ 		params.tanHalf = halfSize / (float)config::VrFocal;
+ 		params.overlay = glm::vec4(params.tanHalf, 1.f, -1.f);	// no vertex counts as overlay
+ 		params.viewProj = projection(params.tanHalf, zNear);
++        // An inactive native frame is a raster panel, not a desktop projection
++        // pasted separately into the two XR eyes. Input-domain proof is unchanged.
++        const auto* eye = xr::currentEye();
++        silent_scope::dc_native_panel::apply(settings.content.gameId, ctx.isRTT,
++            ctx.framebufferWidth, ctx.framebufferHeight, eye != nullptr, bool(config::VrReproject),
++            worldScale(), silent_scope::dc_settings::panel_distance_metres(),
++            eye != nullptr ? eye->viewProj : glm::mat4(1.f), params);
+ 		return params;
+ 	}
+ 
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -18,6 +18,8 @@
+ #if !defined(GLES2)
+ #include "dreamcast/dc_scope_gl.h"
+ #include "dreamcast/dc_scope_composite.h"
++#include "dreamcast/dc_native_panel.h"
++#include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_scope_hud.h"
+ #endif
+ 
+@@ -146,7 +148,14 @@
+ 	#if VR_REPROJECT == 1 && DIV_POS_Z == 1
+ 		// vpos is (ndc.x * W, ndc.y * W, W, W): lift it back to the game's eye space
+ 		// and view it from the VR camera. Depth keeps using the original W (vtx_uv.z).
+-		if (abs(vpos.w - vrOverlay.w) < 0.002)
++		if (vrOverlay.w == -2.0)
++        {
++            // Inactive Silent Scope XR: one physical native raster panel for
++            // both eyes. Native W in vtx_uv.z still controls fragment depth.
++            highp vec2 ndc = vpos.xy / vpos.w;
++            vpos = vrMat * vec4(ndc * vrOverlay.xy * vrOverlay.z, -vrOverlay.z, 1.0);
++        }
++		else if (abs(vpos.w - vrOverlay.w) < 0.002)
+ 		{
+ 			// 2D overlay: pin to a plane at a fixed depth, at its original on-screen size.
+ 			// (The cinematic letterbox, whole opaque black polygons, is taken out before this:
+@@ -1645,7 +1654,9 @@
+ 		bindVertexArray(0);
+ 		glBindBuffer(GL_ARRAY_BUFFER, 0);
+ 	}
+-	const float d = config::VrHudDepth;
++	const float panelDepth = silent_scope::dc_native_panel::depth(vr::worldScale(),
++        silent_scope::dc_settings::panel_distance_metres());
++    const float d = settings.content.gameId == "T9507N" && panelDepth > 0.f ? panelDepth : float(config::VrHudDepth);
+ 	const float tx = 320.f / config::VrFocal * d, ty = 240.f / config::VrFocal * d;
+ 	// game eye space, renderer convention (y down): top of the image has negative y
+ 	const float quad[] {
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -19,6 +19,7 @@
+ #include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
++#include "dreamcast/dc_native_panel.h"
+ #include "dreamcast/dc_hud_message.h"
+ #include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/rifle_renderer.h"
+@@ -1069,7 +1070,9 @@
+ // the position in screen ndc (-1..1, y down) and the distance along the ray.
+ bool hitOverlayPlane(const glm::vec3& o, const glm::vec3& d, const glm::vec2& dcSize, glm::vec2& ndc, float& dist)
+ {
+-	const float depth = config::VrHudDepth;
++	const float panelDepth = silent_scope::dc_native_panel::depth(worldScale(),
++        silent_scope::dc_settings::panel_distance_metres());
++    const float depth = settings.content.gameId == "T9507N" && panelDepth > 0.f ? panelDepth : float(config::VrHudDepth);
+ 	if (d.z > -1e-3f)
+ 		return false;
+ 	dist = (-depth - o.z) / d.z;

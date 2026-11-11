@@ -1,0 +1,39 @@
+--- a/core/dreamcast/dc_hud.h
++++ b/core/dreamcast/dc_hud.h
+@@ -79,6 +79,26 @@
+     }
+     return {};
+ }
++// The native range draws five ranking rows at (490,50), stepping 20 px.
++// Match the authored rank, initials and m'ss"cc fields on their font grid.
++inline bool range_ranking_glyph(float x,float y,float u,float v){
++    if(!(x>=490.f&&x<=620.f&&y>=50.f&&y<=130.f&&u>=0.f&&u<=.9375f&&v>=0.f&&v<=.9375f))return false;
++    const float column=(x-490.f)/10.f,row=(y-50.f)/20.f;
++    if(column!=std::floor(column)||row!=std::floor(row)||
++       u*16!=std::floor(u*16)||v*16!=std::floor(v*16))return false;
++    const int glyph=32+int(u*16)+16*int(v*16);
++    const bool digit=glyph>='0'&&glyph<='9';
++    switch(int(column)){
++    case 0: return (glyph>='1'&&glyph<='8')||glyph=='-';
++    case 1: case 5: return glyph==' ';
++    case 2: case 3: case 4:
++        return (glyph>='A'&&glyph<='Z')||digit||glyph=='.'||glyph==' ';
++    case 6: return digit||glyph==' ';
++    case 8: return glyph=='\'';
++    case 11: return glyph=='"';
++    default: return digit;
++    }
++}
+ template<class Polygon,class Vertex> Decision classify_detailed(const Gate& g,const Polygon& p,const Vertex& a,const Vertex& b,const Vertex& c){
+     if(!enabled(g)||p.isp.full!=0xc8800000||p.tileclip!=0x00100200)return {};
+     // These native 10x20 font cells have no world lens owner.
+@@ -88,7 +108,8 @@
+         // Indoor emits extra score digits at the end of the second HUD row.
+         // Accept only digit atlas cells in the two rightmost native slots.
+         const bool indoor_digit=(x==620.f||x==630.f)&&y==50.f&&v==.0625f&&u<=9.f/16.f;
+-        const uint8_t tint=indoor_digit&&a.col[1]==255?255:0;
++        const bool ranking=range_ranking_glyph(x,y,u,v);
++        const uint8_t tint=(indoor_digit||ranking)&&a.col[1]==255?255:0;
+         unsigned corners=0;
+         for(const auto* vertex:{&a,&b,&c}){
+             const bool right=vertex->x==x+10,bottom=vertex->y==y+20;

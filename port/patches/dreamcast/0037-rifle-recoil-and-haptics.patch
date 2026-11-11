@@ -1,0 +1,71 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -29,6 +29,7 @@
+ #include "dreamcast/rifle_support.h"
+ #include "dreamcast/rifle_smoothing.h"
+ #include "dreamcast/rifle_scope_stability.h"
++#include "dreamcast/rifle_recoil.h"
+ #include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+@@ -148,11 +149,13 @@
+ double ssProfileStarted=-1,ssProfileLast=-1;
+ uint64_t ssScopeFrames{},ssScopeReady{};
+ glm::mat4 ssRifleModel(1.f);
++ss::RifleRecoil ssRifleRecoil;
+ bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{};
+ bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
+ uint64_t ssNativeGeneration{};
+ XrTime ssSecondarySince{};
+ void resetSilentScopePose(){
++    ssRifleRecoil.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2367,7 +2370,13 @@
+     ss::dc_xr::Target emitted;const bool delivered=ss::dc_xr::input_bridge().submit(target,&emitted);
+     // A controller pulse acknowledges a fresh input gesture only. Native hit
+     // confirmation is intentionally not inferred from this submission.
+-    if(delivered&&emitted.fire&&!ssSubmittedFireWas)haptic(target.hand,.02f,.5f);
++    if(!ssRifleValid)ssRifleRecoil.reset();
++    if(delivered&&emitted.fire&&!ssSubmittedFireWas){
++        const bool braced=supported.supported;
++        if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
++        haptic(target.hand,braced?.028f:.038f,1.f);
++        if(braced)haptic(1-target.hand,.024f,.55f);
++    }
+     ssSubmittedFireWas=emitted.fire;ssFireWas=pull;
+ }
+ 
+@@ -2389,11 +2398,12 @@
+         restore(GL_DEPTH_TEST,depth);restore(GL_BLEND,blend);restore(GL_CULL_FACE,cull);restore(GL_SCISSOR_TEST,scissor);restore(GL_STENCIL_TEST,stencil);
+     }
+ };
+-void drawSilentScope(const glm::mat4& vp,const glm::vec3& eyePos,const ss::dc_scope::TextureView& scope){
++void drawSilentScope(const glm::mat4& vp,const glm::vec3& eyePos,const ss::dc_scope::TextureView& scope,
++                     const glm::mat4& rifleModel){
+     SsGlState state;
+     glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
+     glClear(GL_DEPTH_BUFFER_BIT);
+-    ssRifle->draw_rifle_texture(vp,ssRifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
++    ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;
+@@ -3672,6 +3682,7 @@
+ 	const bool render = frameState.shouldRender && located;
+ 	bool ok = true;
+     const bool drawRifle=silentScope&&focused&&ssRifleValid&&ssRifle&&!menuOpen&&!darkRoom;
++    const auto renderedRifleModel=ssRifleRecoil.apply(ssRifleModel,ss::dc_scope::monotonic_seconds());
+     // One scope freshness decision spans both eyes and the optic/native widget.
+     ss::dc_scope::ScopedRifleDrawAuthorization rifleAuthorization(drawRifle);
+ 	for (int i = 0; render && i < 2; i++)
+@@ -3738,7 +3749,7 @@
+                 reinterpret_cast<uintptr_t>(GraphicsContext::Instance()),ss::dc_scope::presentation_seconds(),&scope);
+             if(i==0){++ssScopeFrames;if(scope)++ssScopeReady;}
+             glBindFramebuffer(GL_FRAMEBUFFER,c.fbos[index]);glViewport(0,0,c.width,c.height);
+-            drawSilentScope(eyeProjection(views[i].fov)*view,relativePosition(views[i].pose.position),scope);
++            drawSilentScope(eyeProjection(views[i].fov)*view,relativePosition(views[i].pose.position),scope,renderedRifleModel);
+         }
+         if(silentScope&&focused)drawSilentScopeNativeControls(eyeProjection(views[i].fov)*view);
+         if (menuOpen && !darkRoom)

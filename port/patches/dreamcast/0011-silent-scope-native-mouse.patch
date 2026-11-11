@@ -1,0 +1,77 @@
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -23,6 +23,7 @@
+ #include "stdclass.h"
+ #include "cfg/option.h"
+ #include "dreamcast/dc_settings.h"
++#include "dreamcast/dc_mouse_native.h"
+ #include "hw/aica/aica_if.h"
+ #include "imgread/common.h"
+ #include "hw/naomi/naomi_cart.h"
+@@ -890,6 +891,7 @@
+ 		config::MapleMainDevices[0].override(MDT_Mouse);
+ 		for (unsigned port = 1; port < config::MapleMainDevices.size(); ++port)
+ 			config::MapleMainDevices[port].override(MDT_None);
++		silent_scope::dc_mouse::initialize_native_mouse();
+ 	}
+ 
+ 	if (config::GGPOEnable || settings.raHardcoreMode)
+--- a/core/hw/maple/maple_cfg.cpp
++++ b/core/hw/maple/maple_cfg.cpp
+@@ -9,6 +9,7 @@
+ #include "serialize.h"
+ #include "input/maplelink.h"
+ #include "input/mouse.h"
++#include "dreamcast/dc_mouse_native.h"
+ 
+ #if defined(_WIN32) && !defined(LIBRETRO)
+ #include "input/gamepad.h"
+@@ -216,6 +217,10 @@
+ 	inputState.relPos.x = 0;
+ 	inputState.relPos.y = 0;
+ 	inputState.relPos.wheel = 0;
++    if (settings.platform.isConsole() && playerNum() == 0 && dev->bus_id == 0
++            && dev->bus_port == 5 && dev->get_device_type() == MDT_Mouse
++            && silent_scope::dc_mouse::poll_native_mouse(buttons, x, y, wheel))
++        return; // This initialized native adapter owns invalid/stale neutral packets too.
+ #if defined(_WIN32) && !defined(LIBRETRO)
+     // A real native Maple mouse has no Start button. Relative aiming remains
+     // neutral in this diagnostic; native left-click is the only injected bit.
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -14,6 +14,7 @@
+ #include "xr_host.h"
+ #include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_xr_bridge.h"
++#include "dreamcast/dc_mouse_native.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
+ #include "dreamcast/rifle_renderer.h"
+@@ -2109,6 +2110,8 @@
+ // and optionally stabilized physical model. No generic gun, P2 or slide path.
+ void updateSilentScope(XrTime time)
+ {
++    // Both registrations are idempotent; native startup owns event registration.
++    ss::dc_xr::set_input_sink(ss::dc_mouse::native_mouse_sink());
+     ssRifleValid=false;
+     frameWorldZoom=1.f;
+     if(menuHowToPlay&&!menuOpen)setHowToPlay(false,"menu closed");
+@@ -3205,6 +3208,7 @@
+ 
+ void term()
+ {
++    ss::dc_xr::set_input_sink({});ss::dc_mouse::disable_native_mouse();
+     ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();
+     ss::dc_scope::silent_scope_dc_scope_active(false);
+ 	if (instance != XR_NULL_HANDLE)
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -338,7 +338,7 @@
+ target_include_directories(${PROJECT_NAME} PRIVATE core core/deps core/deps/stb core/deps/json core/deps/asio/asio/include)
+ # Silent Scope owned native scope image and accepted procedural rifle.
+ target_sources(${PROJECT_NAME} PRIVATE core/dreamcast/dc_scope.cpp core/dreamcast/rifle_renderer.cpp
+-    core/dreamcast/dc_settings.cpp core/dreamcast/dc_persistence.cpp core/dreamcast/dc_xr_bridge.cpp)
++    core/dreamcast/dc_settings.cpp core/dreamcast/dc_persistence.cpp core/dreamcast/dc_xr_bridge.cpp core/dreamcast/dc_mouse_input.cpp core/dreamcast/dc_mouse_native.cpp)
+ set_source_files_properties(core/dreamcast/rifle_renderer.cpp PROPERTIES COMPILE_DEFINITIONS SILENT_SCOPE_FLYCAST_GL=1)
+ if(LIBRETRO)
+ 	target_include_directories(${PROJECT_NAME} PRIVATE shell/libretro)

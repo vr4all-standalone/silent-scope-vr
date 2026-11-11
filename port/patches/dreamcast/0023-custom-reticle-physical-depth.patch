@@ -1,0 +1,38 @@
+--- a/core/rend/vr/xr_gun.cpp
++++ b/core/rend/vr/xr_gun.cpp
+@@ -444,7 +444,7 @@
+   out.push_back({gun.aimPoint+(right*vertex.x+up*vertex.y)*(.055f*reference),glm::vec4(color,1.f),{}});
+ }
+ 
+-void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool withSmoke)
++void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool withSmoke, bool occludeCustomReticle)
+ {
+ 	if (!initGlow())
+ 		return;
+@@ -561,7 +561,13 @@
+ 	drawGlowShape(Dot, dots);
+ 	// Custom arms are opaque player color; keep additive blending for the effects above.
+ 	glcache.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++    // The physical rifle/ocular has already written ordinary eye-projection
++    // depth. Occlude only gameplay artwork; native scope pixels and the purple
++    // menu/service dots above retain their own established rendering paths.
++    const bool reticleDepth = occludeCustomReticle && !gun.menuPointer && !gun.servicePointer;
++    if (reticleDepth) glcache.Enable(GL_DEPTH_TEST); // GL_LESS, writes off from above.
+ 	drawGlowShape(Line, reticle);
++    if (reticleDepth) glcache.Disable(GL_DEPTH_TEST); // Preserve the default glow exit state.
+ 	glcache.DepthMask(GL_TRUE);
+ 	glcache.Disable(GL_BLEND);
+ 	logGlErrors("gun glow");
+--- a/core/rend/vr/xr_gun.h
++++ b/core/rend/vr/xr_gun.h
+@@ -93,7 +93,9 @@
+ // Arcade colors follow gun.player (P1 red, P2 blue), including the baked fallback.
+ // tint: retained for caller compatibility; native and unrelated folder models keep their own colors.
+ void drawGunModel(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool clearDepth, const glm::vec3& tint);
+-void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool withSmoke);
++void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool withSmoke, bool occludeCustomReticle = false);
++// Optional gameplay reticle depth uses previously drawn physical gun/ocular depth.
++// Default false preserves existing games and menu/service pointers.
+ // The GL context is going away.
+ void termGun();
+ 

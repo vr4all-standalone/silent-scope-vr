@@ -1,0 +1,39 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -30,6 +30,7 @@
+ #include "dreamcast/rifle_smoothing.h"
+ #include "dreamcast/rifle_scope_stability.h"
+ #include "dreamcast/rifle_recoil.h"
++#include "dreamcast/rifle_steady_aim.h"
+ #include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+@@ -139,6 +140,7 @@
+ ss::RifleSupport ssSupport;
+ ss::RifleSmoothing ssSmoothing;
+ ss::RifleScopeStability ssScopeStability;
++ss::RifleSteadyAim ssSteadyAim;
+ bool ssScopeZoomArmed{};
+ std::array<ss::GripLatch,2> ssGripLatch;
+ ss::dc_mouse::MenuStickDirection ssNativeMenuStick;
+@@ -156,6 +158,7 @@
+ XrTime ssSecondarySince{};
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
++    ssSteadyAim.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2275,8 +2278,12 @@
+         }
+         ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ss::dc_rifle::ocular,
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
++        const auto& firingHand=hands[target.hand];
++        ssRifleModel=ssSteadyAim.update(ssRifleModel,ss::dc_rifle::ocular,target.host_seconds,
++            firingHand.grip,firingHand.grip_valid);
+     } else {
+         ssScopeStability.reset();
++        ssSteadyAim.reset();
+     }
+     XrActionStateGetInfo zoomInfo{XR_TYPE_ACTION_STATE_GET_INFO};
+     zoomInfo.action = stickAction;

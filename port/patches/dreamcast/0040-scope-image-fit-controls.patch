@@ -1,0 +1,52 @@
+--- a/core/rend/vr/xr_menu.h
++++ b/core/rend/vr/xr_menu.h
+@@ -17,7 +17,7 @@
+ namespace vr::xr::menu
+ {
+ 
+-enum Row { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle, ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView, GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit, Hand, FpsCounter, AimSmoothing, ScopeStability, ScopeZoom, Rows };
++enum Row { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle, ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView, GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit, Hand, FpsCounter, AimSmoothing, ScopeStability, ScopeZoom, ScopeImageDepth, ScopeImageSize, Rows };
+ 
+ // What the controllers did in a headset frame. The buttons are edges (just pressed); the rays,
+ // one per hand (0 left, 1 right), are in the game camera's room space, with their trigger's click.
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -31,7 +31,7 @@
+ constexpr int Left = 0, Right = 1;
+ 
+ const char *const Labels[Rows] { "Resume", "Recenter", "Gun", "Gun angle", "Reload", "Two players", "Laser", "Reticle", "Reticle min size", "Reticle max size", "Reticle shrink distance", "Haptics",
+-		"World size", "Panel distance", "HUD size", "Wider view", "Game zoom", "How to play", "Open Service Menu", "Reset to defaults", "Quit", "Hand", "FPS counter", "Aim smoothing", "Scope stability", "Scope zoom" };
++		"World size", "Panel distance", "HUD size", "Wider view", "Game zoom", "How to play", "Open Service Menu", "Reset to defaults", "Quit", "Hand", "FPS counter", "Aim smoothing", "Scope stability", "Scope zoom", "Scope image depth", "Scope image size" };
+ const char *const HapticsNames[4] { "Off", "Light", "Medium", "Strong" };
+ // vr.Haptics' words, saved by the Haptics row (hapticsLevel() reads them, and 1.2's numbers)
+ const char *const HapticsWords[4] { "off", "light", "medium", "strong" };
+@@ -49,7 +49,7 @@
+     static const std::vector<int> original { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+         GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit };
+-    static const std::vector<int> silentScope { Resume, Recenter, Gun, GunAngle, AimSmoothing, ScopeStability, ScopeZoom, Hand, Reload, TwoPlayers, Laser, Reticle,
++    static const std::vector<int> silentScope { Resume, Recenter, Gun, GunAngle, AimSmoothing, ScopeStability, ScopeZoom, ScopeImageDepth, ScopeImageSize, Hand, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+         HowToPlay, FpsCounter, ResetDefaults, Quit };
+     return dc::is_silent_scope() ? silentScope : original;
+@@ -72,6 +72,8 @@
+     case FpsCounter: setting=dc::Setting::FpsCounter; return true;
+     case AimSmoothing: setting=dc::Setting::AimSmoothing; return true;
+     case ScopeStability: setting=dc::Setting::ScopeStability; return true;
++    case ScopeImageDepth: setting=dc::Setting::ScopeImageDepth; return true;
++    case ScopeImageSize: setting=dc::Setting::ScopeImageSize; return true;
+     case ScopeZoom: setting=dc::Setting::ScopeZoom; return true;
+     default: return false;
+     }
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2410,7 +2410,8 @@
+     SsGlState state;
+     glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
+     glClear(GL_DEPTH_BUFFER_BIT);
+-    ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
++    ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
++        ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale());
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

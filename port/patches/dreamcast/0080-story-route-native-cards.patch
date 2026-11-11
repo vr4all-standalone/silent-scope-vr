@@ -1,0 +1,35 @@
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -42,14 +42,6 @@
+   }
+   if(facts.kind==K::Dialog&&facts.source_context>=2&&facts.source_context<=5&&facts.confirm_button)
+    buttons_.push_back({{512,80,632,116},"Continue",action(V::Confirm),facts.interactive});
+-  if(facts.kind==K::ModeSelect&&facts.source_context==dc_menu::StoryRouteContext){
+-   constexpr const char* labels[]{"Tower Building","Air Battle","Stadium"};
+-   for(int row=0;row<3;++row){
+-    auto focus=action(V::Focus);focus.row=row;
+-    const float x=74.f+168.f*row;
+-    buttons_.push_back({{x,418,x+156,456},labels[row],focus,facts.interactive&&facts.aim_verified});
+-   }
+-  }
+  }
+  const std::vector<Button>& buttons()const{return buttons_;}
+  dc_menu::MenuAction context()const{auto a=action(dc_menu::MenuVerb::None);return a;}
+@@ -61,6 +53,17 @@
+   for(const auto& button:buttons_)if(button.bounds.hit(x,y)){
+    if(!button.enabled)return context();
+    auto a=button.action;if(a.kind==K::Training&&a.verb==V::Confirm){a.row=training_row_;a.column=training_column_;}return a;
++  }
++  if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==1&&
++     facts_.source_context==dc_menu::StoryRouteContext&&facts_.interactive&&facts_.aim_verified){
++   // Tower Building, Air Battle, and Stadium in the stock 640x480 route view.
++   // The heading and lower scope previews are separate from these card faces.
++   constexpr Rect cards[]{{16,170,208,258},{213,170,427,258},{432,170,624,258}};
++   for(int route=0;route<3;++route){
++    if(!cards[route].hit(x,y)||!(facts_.available_regions&(1u<<route)))continue;
++    auto hit=action(V::Focus);hit.row=route;return hit;
++   }
++   return context();
+   }
+   if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==6&&
+      facts_.source_context==dc_menu::OutdoorStageContext&&facts_.interactive&&facts_.aim_verified){

@@ -1,0 +1,16 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2518,6 +2518,13 @@
+             // the generic picker reports a HUD hit, keep only the barrel ray:
+             // no false marker on the HUD, and no loss of legitimate sky shots.
+             else {target.point_valid=scene;target.fire=gameplayFire&&native3d;}
++            if(pull&&!ssFireWas&&menuSource.kind==ss::dc_menu::MenuKind::ModeSelect){
++                static unsigned modeClickReports=0;
++                if(modeClickReports++<48)
++                    NOTICE_LOG(INPUT,"SS_MODE_CLICK proof=%d aim=%d hit=%d xy=%.1f,%.1f verb=%d row=%d col=%d",
++                        int(menuGeometry),int(menuSource.aim_verified),int(target.point_valid),screen.x*640.f,
++                        screen.y*480.f,int(target.ui_action.verb),target.ui_action.row,target.ui_action.column);
++            }
+             target.native_point={native.x,native.y,native.z};
+             if(target.point_valid){
+                 auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;

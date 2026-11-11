@@ -1,0 +1,55 @@
+--- a/src/devices/cpu/sharc/sharcdrc.cpp
++++ b/src/devices/cpu/sharc/sharcdrc.cpp
+@@ -856,6 +856,18 @@
+ 	{
+ 		UML_DSHR(block, I1, I0, 32);
+ 
++	// This backedge bypasses generate_update_cycles. I2 is its target and
++	// I1 is the caller's accumulated cycles, packed into I0 on entry.
++	uml::code_label const no_recompile = label++;
++	UML_CMP(block, mem(&m_core->force_recompile), 0);
++	UML_JMPc(block, COND_E, no_recompile);
++	UML_MOV(block, mem(&m_core->force_recompile), 0);
++	UML_MOV(block, mem(&m_core->pc), I2);
++	UML_SUB(block, mem(&m_core->icount), mem(&m_core->icount), I1);
++	save_fast_iregs(block);
++	UML_EXIT(block, EXECUTE_RESET_CACHE);
++	UML_LABEL(block, no_recompile);
++
+ 		uml::code_label const no_int = label++;
+ 		UML_CMP(block, mem(&m_core->irq_pending), 0);
+ 		UML_JMPc(block, COND_E, no_int);
+@@ -1230,10 +1242,6 @@
+ 				else
+ 					nextpc = seqlast->pc + (seqlast->skipslots + 1); // otherwise we just go to the next instruction
+ 
+-				// force recompilation at end of block, if needed
+-				UML_CMP(block, mem(&m_core->force_recompile), 0);
+-				UML_EXHc(block, COND_NZ, *m_reset_cache, nextpc);
+-
+ 				/* count off cycles and go there */
+ 				generate_update_cycles(block, compiler, nextpc, true);                     // <subtract cycles>
+ 
+@@ -1542,6 +1550,11 @@
+ 
+ void adsp21062_device::generate_update_cycles(drcuml_block &block, compiler_state &compiler, uml::parameter param, bool allow_exception)
+ {
++	// Taken jumps/calls bypass compile_block's fallthrough. Honor code
++	// invalidation before transferring, while the cycle map is still live.
++	UML_CMP(block, mem(&m_core->force_recompile), 0);
++	UML_EXHc(block, COND_NZ, *m_reset_cache, param);
++
+ 	/* check full interrupts if pending */
+ 	if (compiler.checkints)
+ 	{
+--- a/src/devices/cpu/sharc/sharc.cpp
++++ b/src/devices/cpu/sharc/sharc.cpp
+@@ -1006,6 +1006,8 @@
+ 	if (m_enable_drc)
+ 	{
+ 		m_core->astat_drc.clear();
++		// Reset cleared SRAM and live loops; discard old loop annotations.
++		m_drcfe->flush();
+ 
+ 		m_core->cache_dirty = 1;
+ 		m_drcuml->reset();

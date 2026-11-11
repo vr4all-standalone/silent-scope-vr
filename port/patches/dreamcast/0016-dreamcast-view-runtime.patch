@@ -1,0 +1,55 @@
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -24,6 +24,7 @@
+ #include "cfg/option.h"
+ #include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_mouse_native.h"
++#include "dreamcast/dc_view_runtime.h"
+ #if defined(_WIN32) && !defined(LIBRETRO)
+ #include "dreamcast/dc_mouse_consumer_probe.h"
+ #endif
+@@ -902,6 +903,7 @@
+ 		for (unsigned port = 1; port < config::MapleMainDevices.size(); ++port)
+ 			config::MapleMainDevices[port].override(MDT_None);
+ 		silent_scope::dc_mouse::initialize_native_mouse();
++		silent_scope::dc_view::initialize_view_runtime();
+ 	}
+ 
+ 	if (config::GGPOEnable || settings.raHardcoreMode)
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -16,6 +16,7 @@
+ #include "dreamcast/dc_xr_bridge.h"
+ #include "dreamcast/dc_ui_domain.h"
+ #include "dreamcast/dc_mouse_native.h"
++#include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
+ #include "dreamcast/rifle_renderer.h"
+@@ -2111,6 +2112,7 @@
+ // and optionally stabilized physical model. No generic gun, P2 or slide path.
+ void updateSilentScope(XrTime time)
+ {
++    ss::dc_view::update_view_runtime(gles_vr_frame(),worldScale());
+     // Both registrations are idempotent; native startup owns event registration.
+     ss::dc_xr::set_input_sink(ss::dc_mouse::native_mouse_sink());
+     ssRifleValid=false;
+@@ -3225,6 +3227,7 @@
+ 
+ void term()
+ {
++    ss::dc_view::shutdown_view_runtime();
+     ss::dc_xr::set_input_sink({});ss::dc_mouse::disable_native_mouse();
+     ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();
+     ss::dc_scope::silent_scope_dc_scope_active(false);
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -338,7 +338,7 @@
+ target_include_directories(${PROJECT_NAME} PRIVATE core core/deps core/deps/stb core/deps/json core/deps/asio/asio/include)
+ # Silent Scope owned native scope image and accepted procedural rifle.
+ target_sources(${PROJECT_NAME} PRIVATE core/dreamcast/dc_scope.cpp core/dreamcast/rifle_renderer.cpp
+-    core/dreamcast/dc_settings.cpp core/dreamcast/dc_persistence.cpp core/dreamcast/dc_xr_bridge.cpp core/dreamcast/dc_mouse_input.cpp core/dreamcast/dc_mouse_native.cpp)
++    core/dreamcast/dc_settings.cpp core/dreamcast/dc_persistence.cpp core/dreamcast/dc_xr_bridge.cpp core/dreamcast/dc_mouse_input.cpp core/dreamcast/dc_mouse_native.cpp core/dreamcast/dc_view_runtime.cpp)
+ set_source_files_properties(core/dreamcast/rifle_renderer.cpp PROPERTIES COMPILE_DEFINITIONS SILENT_SCOPE_FLYCAST_GL=1)
+ if(LIBRETRO)
+ 	target_include_directories(${PROJECT_NAME} PRIVATE shell/libretro)

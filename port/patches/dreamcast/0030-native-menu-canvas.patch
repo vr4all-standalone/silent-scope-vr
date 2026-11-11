@@ -1,0 +1,88 @@
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -119,10 +119,16 @@
+ INTERPOLATION out highp vec4 vtx_base;
+ INTERPOLATION out highp vec4 vtx_offs;
+ out highp vec3 vtx_uv;
++#if VR_REPROJECT == 1
++out highp vec3 vtx_native_canvas;
++#endif
+ 
+ void main()
+ {
+ 	highp vec4 vpos = ndcMat * in_pos;
++#if VR_REPROJECT == 1
++    vtx_native_canvas = vec3(0.0);
++#endif
+ 	vtx_base = in_base;
+ 	vtx_offs = in_offs;
+ #if TARGET_GL == GLES2
+@@ -153,6 +159,7 @@
+             // Inactive Silent Scope XR: one physical native raster panel for
+             // both eyes. Native W in vtx_uv.z still controls fragment depth.
+             highp vec2 ndc = vpos.xy / vpos.w;
++            vtx_native_canvas = vec3(ndc * 0.5 + 0.5, 1.0);
+             vpos = vrMat * vec4(ndc * vrOverlay.xy * vrOverlay.z, -vrOverlay.z, 1.0);
+         }
+ 		else if (abs(vpos.w - vrOverlay.w) < 0.002)
+@@ -219,6 +226,9 @@
+ INTERPOLATION in highp vec4 vtx_base;
+ INTERPOLATION in highp vec4 vtx_offs;
+ in highp vec3 vtx_uv;
++#if VR_REPROJECT == 1
++in highp vec3 vtx_native_canvas;
++#endif
+ 
+ lowp float fog_mode2(highp float w)
+ {
+@@ -323,6 +333,13 @@
+ 
+ void main()
+ {
++    // SS_NATIVE_CANVAS_CLIP_BEGIN
++#if VR_REPROJECT == 1
++    if (vtx_native_canvas.z > 0.5 &&
++        (any(lessThan(vtx_native_canvas.xy, vec2(0.0))) ||
++         any(greaterThan(vtx_native_canvas.xy, vec2(1.0))))) discard;
++#endif
++    // SS_NATIVE_CANVAS_CLIP_END
+ 	// Clip inside the box
+ 	#if pp_ClipInside == 1
+ 		if (gl_FragCoord.x >= pp_ClipTest.x && gl_FragCoord.x <= pp_ClipTest.z
+@@ -857,6 +874,7 @@
+ 		addConstant("pp_TriLinear", s->trilinear);
+ 		addConstant("pp_Palette", s->palette);
+ 		addConstant("DIV_POS_Z", s->divPosZ);
++		addConstant("VR_REPROJECT", s->divPosZ && config::VrReproject);
+ 		addConstant("DITHERING", s->dithering);
+ 
+ 		addSource(PixelCompatShader);
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -24,6 +24,9 @@
+ #include "dreamcast/dc_wider_control.h"
+ #include "dreamcast/dc_ta_ui.h"
+ #include "dreamcast/dc_native_panel.h"
++#include "dreamcast/dc_native_menus.h"
++#include "dreamcast/dc_menu_presentation.h"
++#include "dreamcast/dc_mouse_native.h"
+ #include "dreamcast/dc_settings.h"
+ #include "hw/sh4/sh4_opcode_list.h"
+ #include "hw/sh4/sh4_interrupts.h"
+@@ -2590,7 +2593,15 @@
+ 	const glm::vec2 halfSize(dcWidth * 0.5f, dcHeight * 0.5f);
+ 	const bool silentScope=settings.content.gameId=="T9507N";
+     const GameCamera submittedCamera=gameCamera(ctx);
+-    const bool active = config::VrReproject && !ctx.isRTT
++    bool nativeMenuRaster=false;
++    if(silentScope && config::VrReproject && xr::currentEye()!=nullptr && !ctx.isRTT){
++        silent_scope::dc_native_menus::NativeMenusProof menu;
++        const bool current=menu.configure(settings.content.gameId,ctx);
++        nativeMenuRaster=silent_scope::dc_menu::raster_menu(
++            silent_scope::dc_mouse::native_menu_snapshot(),menu.kind(),menu.page(),
++            menu.source_context(),current,true,ctx.isRTT);
++    }
++    const bool active = config::VrReproject && !ctx.isRTT && !nativeMenuRaster
+         &&(!silentScope||(submittedCamera.valid&&silentScopeWorldGeometry(ctx)));
+ 	params.comfort = glm::vec3(0.f);
+ 	params.worldZoom = 1.f; // RTT, flat and non-XR never inherit world zoom

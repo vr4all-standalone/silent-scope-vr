@@ -1,0 +1,130 @@
+--- a/core/rend/vr/xr_panel.h
++++ b/core/rend/vr/xr_panel.h
+@@ -25,6 +25,7 @@
+ struct Panel
+ {
+ 	bool brand = false; // embedded VR4ALL launch image
++	bool pictureGrid = false, mirrorPictures = false;
+ 	std::vector<PanelLine> lines;
+ 	float progress = -1.f;	// a bar under the text, 0..1 (below 0: none)
+ 	std::string footer;		// small, at the bottom
+--- a/core/rend/vr/xr_panel.cpp
++++ b/core/rend/vr/xr_panel.cpp
+@@ -184,8 +184,58 @@
+ 	}
+ }
+ 
++bool paintPictureGuide(const Panel& panel)
++{
++    if (!panel.pictureGrid || panel.lines.size() != 9)
++        return false;
++    size_t bytes = 0;
++    auto image = resource::load("picture/silent-scope-how-to.png", bytes);
++    int w = 0, h = 0, channels = 0;
++    stbi_set_flip_vertically_on_load_thread(0);
++    u8* decoded = image ? stbi_load_from_memory(image.get(), (int)bytes, &w, &h, &channels, 4) : nullptr;
++    if (decoded == nullptr || w != 1536 || h != 1024)
++    {
++        stbi_image_free(decoded);
++        WARN_LOG(RENDERER, "XR: Silent Scope instruction pictures unavailable");
++        return false;
++    }
++    canvasWidth = w;
++    canvasHeight = h;
++    pixels.assign(decoded, decoded + size_t(w) * h * 4);
++    stbi_image_free(decoded);
++    if (panel.mirrorPictures)
++    {
++        // Mirror each picture within its own card, preserving the four actions.
++        for (int y = 0; y < h; ++y)
++            for (int half = 0; half < 2; ++half)
++                for (int x = 0; x < w / 4; ++x)
++                    for (int c = 0; c < 4; ++c)
++                        std::swap(pixels[(size_t(y) * w + half * (w / 2) + x) * 4 + c],
++                            pixels[(size_t(y) * w + (half + 1) * (w / 2) - 1 - x) * 4 + c]);
++    }
++    fill(36, 88, w - 36, 90, theme::Line);
++    fill(w / 2 - 1, 104, w / 2 + 1, 932, theme::Line);
++    fill(36, 511, w - 36, 513, theme::Line);
++    fill(36, 950, w - 36, 952, theme::Line);
++    text(panel.lines[0].text, 42.f, w * .5f, 63, panel.lines[0].colour);
++    for (int tile = 0; tile < 4; ++tile)
++    {
++        const float x = w * (tile % 2 ? .75f : .25f);
++        const int top = tile < 2 ? 132 : 568;
++        const int bottom = tile < 2 ? 485 : 921;
++        const auto& title = panel.lines[1 + tile * 2];
++        const auto& caption = panel.lines[2 + tile * 2];
++        text(title.text, 35.f, x, top, title.colour);
++        text(caption.text, 27.f, x, bottom, caption.colour);
++    }
++    text(panel.footer, 25.f, w * .5f, 992, panel.footerColour);
++    return true;
++}
++
+ void paint(const Panel& panel)
+ {
++    if (paintPictureGuide(panel))
++        return;
+ 	if (panel.brand)
+ 	{
+ 		size_t size = 0;
+@@ -614,12 +664,13 @@
+ 		return;
+ 	// what it says, the bar in steps of half a percent
+ 	std::string says = panel.brand ? "VR4ALL SPLASH\n" : "";
++	says += panel.pictureGrid ? (panel.mirrorPictures ? "PICTURES LEFT\n" : "PICTURES RIGHT\n") : "";
+ 	for (const PanelLine& line : panel.lines)
+ 		says += line.text + '\n';
+ 	says += panel.footer + '\n' + std::to_string(panel.progress < 0.f ? -1 : (int)(panel.progress * 200.f))
+ 			+ '\n' + std::to_string((int)(panel.back.r * 255.f)) + ' ' + std::to_string((int)(panel.barFill.g * 255.f));
+ 	bindPicture(linesPicture, says, [&] { paint(panel); });
+-	const float hx = WidthMetres * 0.5f, hy = hx * Height / Width;
++	const float hx = WidthMetres * 0.5f, hy = hx * linesPicture.height / linesPicture.width;
+ 	drawQuad(viewProj, glm::translate(glm::mat4(1.f), glm::vec3(0.f, 0.f, -Distance)), hx, hy);
+ }
+ 
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -3929,15 +3929,22 @@
+     {
+         const bool left=ss::dc_settings::primary_hand()==Left;
+         panel = Panel();
++        panel.pictureGrid = true;
++        panel.mirrorPictures = left;
+         panel.lines = {
+-            { "How to play Silent Scope", .077f, violet },
+-            { "B or Y: Start / Pause. Point and pull Trigger to select.", .046f, cream },
+-            { "Grip to pick up a rifle. Grip the fore-end for two-hand aim.", .043f, cream },
+-            { left ? "Left stick up/down zooms. Hold X for Focus Mode." : "Right stick up/down zooms. Hold A for Focus Mode.", .043f, cream },
+-            { "Arcade: auto reload. Simulation: manual bolt and magazine.", .042f, muted },
+-            { "Simulation bolt: grab with Trigger, lift, pull, push, lock.", .042f, muted },
+-            { "Empty magazine: swap it with Trigger.", .042f, muted },
++            { "How to play Silent Scope", .06f, violet },
++            { "Two-hand aim", .04f, cream },
++            { "Hold both Grip buttons", .035f, muted },
++            { left ? "Hold X - Focus Mode" : "Hold A - Focus Mode", .04f, cream },
++            { "Steady aim for small adjustments", .035f, muted },
++            { "Simulation - Cycle the bolt", .04f, cream },
++            { "Trigger to grab - Lift, pull, push, lock", .035f, muted },
++            { "Simulation - Magazine reload", .04f, cream },
++            { "Trigger to grab and insert a fresh magazine", .035f, muted },
+         };
++        panel.footer = left
++            ? "Left stick up/down - Scope zoom     B / Y - Start / Pause     Trigger - Fire / Select"
++            : "Right stick up/down - Scope zoom     B / Y - Start / Pause     Trigger - Fire / Select";
+     }
+ 	const bool showPanel = panel.brand || !panel.lines.empty();
+ 	// What the panel says, in the log each time it changes: the lines under the title, and the footer
+--- a/resources/resources.cmake
++++ b/resources/resources.cmake
+@@ -24,7 +24,8 @@
+         resources/flash/westdrmg.nvmem.zip	# debug: comm and all errors disabled
+         resources/flash/smarinef.nvmem.zip	# standard cabinet
+         resources/picture/f355_print_template.png
+-        resources/picture/vr4all-splash.png)
++        resources/picture/vr4all-splash.png
++        resources/picture/silent-scope-how-to.png)
+ 
+ cmrc_add_resources(flycast-resources
+         fonts/printer_ascii8x16.bin.zip

@@ -1,0 +1,28 @@
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -904,6 +904,7 @@
+ 	if (settings.content.gameId == "T9507N" && config::VrXr)
+ 	{
+ 		silent_scope::dc_settings::sanitize_loaded();
++		silent_scope::dc_settings::reset_scope_zoom();
+ 		config::NativeDepthInterpolation.override(true);
+ 		config::ThreadedRendering.override(true);
+ 		config::MapleMainDevices[0].override(MDT_Mouse);
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2246,6 +2246,7 @@
+         mainMenuProof.configure(settings.content.gameId,*ctx);
+     static auto previousInputDomain=ss::dc_ui::Domain::Unknown;
+     static bool previousMainMenu{};
++    if(mainMenuVerified&&!previousMainMenu)ss::dc_settings::reset_scope_zoom();
+     if(inputDomain!=previousInputDomain||mainMenuVerified!=previousMainMenu){
+         previousInputDomain=inputDomain;previousMainMenu=mainMenuVerified;
+         // Unknown must not masquerade as physical release then replay a held
+@@ -2356,7 +2357,6 @@
+         if (ss::dc_settings::change(ss::dc_settings::Setting::ScopeZoom, zoomStick.currentState.y > 0 ? 1 : -1))
+             haptic(Right, .025f, .2f);
+     }
+-    ss::dreamcast::scope_camera_magnification.store(ss::dc_settings::scope_magnification(), std::memory_order_relaxed);
+     // Bounded real-runtime evidence distinguishes steady lag from repeated
+     // lifecycle seeds. No per-frame log or gameplay target is inferred.
+     static double aimReportAt=-1;static unsigned aimSamples{},aimRestarts{},aimInvalid{},aimReports{};

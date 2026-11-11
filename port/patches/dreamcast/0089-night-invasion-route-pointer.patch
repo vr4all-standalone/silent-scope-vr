@@ -1,0 +1,127 @@
+--- a/core/dreamcast/dc_menu_actions.h
++++ b/core/dreamcast/dc_menu_actions.h
+@@ -38,6 +38,7 @@
+ constexpr std::uint8_t NativeLeft=4,NativeRight=2,NativeMiddle=8;
+ inline constexpr std::uint32_t ArcadeModeContext=0x100;
+ inline constexpr std::uint32_t StoryRouteContext=0x101;
++inline constexpr std::uint32_t InvasionRouteContext=0x104;
+ inline constexpr std::uint32_t OutdoorStageContext=0x106;
+ struct ModeGoal {bool valid{};double yaw{},pitch{};int row{-1},column{-1};};
+ inline int mode_region(double yaw,double pitch)noexcept {
+@@ -55,6 +56,7 @@
+ inline int mode_region_for_type(int type,double yaw,double pitch)noexcept {
+  if(type==0)return mode_region(yaw,pitch);
+  if(type==1)return story_route_region(yaw);
++ if(type==4)return !std::isfinite(yaw)?-1:yaw>0?0:1;
+  if(type!=6||!std::isfinite(yaw)||!std::isfinite(pitch))return -1;
+  // Native Outdoor stage selector (072666), before display warping.
+  const int column=yaw>=1568?0:yaw>=-1920?1:2;
+@@ -71,6 +73,10 @@
+   if(row<0||row>=3||column!=-1)return {};
+   constexpr double centers[]{3000,0,-3000};
+   return {true,centers[row],0,row,-1};
++ }
++ if(type==4){
++  if(row<0||row>=2||column!=-1)return {};
++  return {true,row==0?2550.:-2550.,0,row,-1};
+  }
+  if(type!=0||row<0||row>4)return {};
+  ModeGoal g;g.valid=true;g.row=row;g.column=column;
+--- a/core/dreamcast/dc_menu_source.h
++++ b/core/dreamcast/dc_menu_source.h
+@@ -46,6 +46,8 @@
+ inline constexpr ControlGuard ModeMouseTables{0x8c0c7a64,0x3c,0x2a32ee5499087bdcull};
+ inline constexpr ControlGuard StoryRoutePicker{0x8c070eda,0x31a,0x19c5af459fd1062cull};
+ inline constexpr ControlGuard StoryRouteOwner{0x8c075ef6,0x5a,0x42cd95c65b846e47ull};
++inline constexpr ControlGuard InvasionRouteOwner{0x8c07468c,0x1b0,0xec8e9a8b67165981ull};
++inline constexpr ControlGuard InvasionRoutePicker{0x8c0711f8,0x3ac,0x73ef36813cf919edull};
+ inline constexpr ControlGuard OutdoorStagePicker{0x8c072098,0x7b8,0x6f5d1815fe3516caull};
+ inline constexpr ControlGuard OutdoorStageOwner{0x8c080480,0xb4,0x4a9365e07518e72cull};
+ inline bool arcade_mode_owner(const Reader& r){
+@@ -59,9 +61,13 @@
+  return r.u32(0x8c1b014c)==0x01070208u&&r.u16(0x8c2214c8)==6
+      &&(r.u32(0x8c1b088c)&0x4000u)!=0;
+ }
++inline bool invasion_route_owner(const Reader& r){
++ return r.u32(0x8c1b014c)==0x01070406u&&r.u8(0x8c1b015e)==0&&r.u16(0x8c1b0884)==4
++     &&r.u16(0x8c2214c8)==4&&(r.u32(0x8c1b088c)&0x4000u)!=0;
++}
+ // The game draws these menus with its main lens, including entry animations.
+ inline bool stock_picker_projection(const Reader& r){
+- return arcade_mode_owner(r)||story_route_owner(r)||outdoor_stage_owner(r);
++ return arcade_mode_owner(r)||story_route_owner(r)||invasion_route_owner(r)||outdoor_stage_owner(r);
+ }
+ inline bool code_matches(const Reader& r,ControlGuard g){
+  if(!r.address(g.address,g.bytes))return false;
+@@ -127,15 +133,16 @@
+   f.confirm_button=NativeMiddle; // 080720 calls08c454; Left is not consumed.
+  }else if(kind==MenuKind::ModeSelect){
+   const bool route=story_route_owner(r);
++  const bool invasion=invasion_route_owner(r);
+   const bool outdoor=outdoor_stage_owner(r);
+   const bool arcade=arcade_mode_owner(r);
+-  if(!route&&!outdoor&&!arcade)return {};
++  if(!route&&!invasion&&!outdoor&&!arcade)return {};
+   const auto phase=r.u8(0x8c2214c0),inner=r.u8(0x8c2214c1);
+-  f.mode_type=outdoor?6:route?1:0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);
+-  f.row_count=outdoor?9:route?3:5;f.column_count=arcade?2:0;
++  f.mode_type=outdoor?6:invasion?4:route?1:0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);
++  f.row_count=outdoor?9:invasion?2:route?3:5;f.column_count=arcade?2:0;
+   if(phase>2||inner>(arcade?5:6)||f.row>=f.row_count||
+      (f.row<0&&(!outdoor||f.row!=-1||inner>=4))||(outdoor&&f.variant!=10))return {};
+-  f.source_context=outdoor?OutdoorStageContext:route?StoryRouteContext:ArcadeModeContext;
++  f.source_context=outdoor?OutdoorStageContext:invasion?InvasionRouteContext:route?StoryRouteContext:ArcadeModeContext;
+   f.context_active=f.interactive=phase==1&&inner==(arcade?3:4);
+   f.native_pitch=r.s16(0x8c1b0860);f.native_yaw=r.s16(0x8c1b0862);
+   f.column=arcade&&f.row==1?(f.native_yaw<0?1:0):-1;
+@@ -143,7 +150,7 @@
+    const auto progress=r.u32(0x8c271970);
+    for(int stage=0;stage<f.row_count;++stage)if(progress>>stage)f.available_regions|=1u<<stage;
+   }else f.available_regions=(1u<<f.row_count)-1;
+-  f.confirm_button=NativeLeft;f.back_button=route?0:NativeRight;
++  f.confirm_button=NativeLeft;f.back_button=route||invasion?0:NativeRight;
+   const auto peripheral=r.u32(0x8c1d54ac);const auto speed=r.u32(0x8c26fe1c);
+   f.aim_profile=1469598103934665603ull;
+   for(auto value:{r.u32(0x8c271ffc),speed,r.u32(0x8c26fe18),std::uint32_t(r.u8(0x8c26fdc7)&0x10),
+@@ -197,6 +204,13 @@
+  }
+  if(story_route_owner(r)){
+   if(!code_matches(r,StoryRouteOwner)||!code_matches(r,StoryRoutePicker)
++      ||!code_matches(r,ModeUpdater)||!code_matches(r,ModeMouseAim)||!code_matches(r,ModeMouseTables))return {};
++  auto route=decode_state(r,MenuKind::ModeSelect);
++  route.verified=route.kind==MenuKind::ModeSelect;
++  return route;
++ }
++ if(invasion_route_owner(r)){
++  if(!code_matches(r,InvasionRouteOwner)||!code_matches(r,InvasionRoutePicker)
+       ||!code_matches(r,ModeUpdater)||!code_matches(r,ModeMouseAim)||!code_matches(r,ModeMouseTables))return {};
+   auto route=decode_state(r,MenuKind::ModeSelect);
+   route.verified=route.kind==MenuKind::ModeSelect;
+--- a/core/dreamcast/dc_menu_presentation.h
++++ b/core/dreamcast/dc_menu_presentation.h
+@@ -12,6 +12,7 @@
+        std::abs(source.native_seconds-frame_seconds)>.15)return false;
+     return (source.mode_type==0&&source.source_context==ArcadeModeContext)||
+            (source.mode_type==1&&source.source_context==StoryRouteContext)||
++           (source.mode_type==4&&source.source_context==InvasionRouteContext)||
+            (source.mode_type==6&&source.source_context==OutdoorStageContext);
+ }
+ // Other menus require both a current native art proof and the source snapshot.
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -65,6 +65,15 @@
+    }
+    return context();
+   }
++  if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==4&&
++     facts_.source_context==dc_menu::InvasionRouteContext&&facts_.interactive&&facts_.aim_verified){
++   constexpr Rect cards[]{{80,168,280,260},{360,168,560,260}};
++   for(int route=0;route<2;++route){
++    if(!cards[route].hit(x,y)||!(facts_.available_regions&(1u<<route)))continue;
++    auto hit=action(V::Focus);hit.row=route;return hit;
++   }
++   return context();
++  }
+   if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==6&&
+      facts_.source_context==dc_menu::OutdoorStageContext&&facts_.interactive&&facts_.aim_verified){
+    // Authored Stage Select card faces, in the stock 640x480 raster.

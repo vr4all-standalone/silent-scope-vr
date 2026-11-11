@@ -1,0 +1,217 @@
+diff --git a/core/dreamcast/dc_menu_actions.h b/core/dreamcast/dc_menu_actions.h
+--- a/core/dreamcast/dc_menu_actions.h
++++ b/core/dreamcast/dc_menu_actions.h
+@@ -22,6 +22,7 @@
+ struct MenuFacts {
+  MenuKind kind{MenuKind::None};bool verified{},interactive{},context_active{true};
+  std::uint64_t context_revision{};
++ double native_seconds{-1};
+  std::uint32_t source_context{}; // Source-attested sub-screen identity, not selection/page.
+  int row{-1},column{-1},page{-1},row_count{},column_count{},page_count{};
+  int value{},value_min{},value_max{};bool value_verified{};
+@@ -35,6 +36,7 @@
+  std::uint8_t confirm_button{},back_button{},exit_button{};
+ };
+ constexpr std::uint8_t NativeLeft=4,NativeRight=2,NativeMiddle=8;
++inline constexpr std::uint32_t ArcadeModeContext=0x100;
+ inline constexpr std::uint32_t StoryRouteContext=0x101;
+ struct ModeGoal {bool valid{};double yaw{},pitch{};int row{-1},column{-1};};
+ inline int mode_region(double yaw,double pitch)noexcept {
+diff --git a/core/dreamcast/dc_menu_controls.h b/core/dreamcast/dc_menu_controls.h
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -11,7 +11,7 @@
+ class Controller {
+  dc_menu::MenuKind kind_{dc_menu::MenuKind::None};std::uint64_t revision_{};
+  int training_row_{},training_column_{};
+- dc_menu::MenuFacts facts_;bool frame_{};std::vector<Button> buttons_;
++ dc_menu::MenuFacts facts_;bool frame_{},selector_panel_{};std::vector<Button> buttons_;
+  dc_menu::MenuAction action(dc_menu::MenuVerb verb)const{
+   dc_menu::MenuAction a;a.kind=facts_.kind;a.verb=verb;a.context_revision=facts_.context_revision;
+   if(a.kind==dc_menu::MenuKind::Options||a.kind==dc_menu::MenuKind::Ranking)a.page=a.from_page=facts_.page;
+@@ -19,8 +19,8 @@
+  }
+ public:
+  void reset(){*this=Controller{};}
+- void begin(const dc_menu::MenuFacts& facts,bool current_native_frame,int rendered_page=-1){
+-  facts_=facts;frame_=current_native_frame;buttons_.clear();
++ void begin(const dc_menu::MenuFacts& facts,bool current_native_frame,int rendered_page=-1,bool selector_panel=false){
++  facts_=facts;frame_=current_native_frame;selector_panel_=selector_panel;buttons_.clear();
+   if(kind_!=facts.kind||revision_!=facts.context_revision){
+    kind_=facts.kind;revision_=facts.context_revision;
+    training_row_=facts.row>=0&&facts.row<4?facts.row:0;training_column_=facts.column>=0&&facts.column<3?facts.column:0;
+@@ -59,6 +59,16 @@
+    if(!button.enabled)return context();
+    auto a=button.action;if(a.kind==K::Training&&a.verb==V::Confirm){a.row=training_row_;a.column=training_column_;}return a;
+   }
++  // Arcade's original panels have a fixed raster layout. The Quest can
++  // reject the desktop art proof while the native selector remains active.
++  if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==0&&
++     facts_.source_context==dc_menu::ArcadeModeContext&&facts_.interactive&&
++     facts_.aim_verified&&native_hit.kind==K::None&&rendered_context==0){
++   auto hit=action(V::Focus);
++   if(Rect{148,87,492,155}.hit(x,y)){hit.row=1;hit.column=x<320?0:1;return hit;}
++   if(Rect{141,172,499,309}.hit(x,y)){hit.row=0;return hit;}
++   if(Rect{148,327,492,402}.hit(x,y)){hit.row=x<264?2:x<376?3:4;return hit;}
++  }
+   if(native_hit.kind!=facts_.kind||native_hit.verb==V::None)return context();
+   if(rendered_context!=facts_.source_context)return context();
+   if((facts_.kind==K::Options||facts_.kind==K::Ranking)&&rendered_page!=facts_.page)return context();
+diff --git a/core/dreamcast/dc_menu_presentation.h b/core/dreamcast/dc_menu_presentation.h
+--- a/core/dreamcast/dc_menu_presentation.h
++++ b/core/dreamcast/dc_menu_presentation.h
+@@ -2,8 +2,18 @@
+ #pragma once
+ #include "dc_menu_actions.h"
+ namespace silent_scope::dc_menu {
+-// A current native art proof and source snapshot must agree before an XR menu
+-// replaces world presentation. Never reclassify a frame from source flags alone.
++// The two source-verified selectors have a fixed 640x480 pointer plane.
++// Limit source ownership to a nearby main frame from the same native clock.
++inline bool selector_panel(const MenuFacts& source,bool native_canvas,double frame_seconds){
++    if(!native_canvas||!source.verified||!source.interactive||!source.context_active||
++       !source.context_revision||source.kind!=MenuKind::ModeSelect||
++       !std::isfinite(frame_seconds)||frame_seconds<0||
++       !std::isfinite(source.native_seconds)||source.native_seconds<0||
++       std::abs(source.native_seconds-frame_seconds)>.15)return false;
++    return (source.mode_type==0&&source.source_context==ArcadeModeContext)||
++           (source.mode_type==1&&source.source_context==StoryRouteContext);
++}
++// Other menus require both a current native art proof and the source snapshot.
+ inline bool raster_menu(const MenuFacts& source, MenuKind rendered_kind,
+                         int rendered_page, unsigned rendered_context,
+                         bool current_geometry, bool xr_eye, bool rtt) {
+diff --git a/core/dreamcast/dc_mouse_native.cpp b/core/dreamcast/dc_mouse_native.cpp
+--- a/core/dreamcast/dc_mouse_native.cpp
++++ b/core/dreamcast/dc_mouse_native.cpp
+@@ -122,6 +122,25 @@
+  feedback.menu_navigation_verified=menu.code_verified&&menu.mouse_present;
+  feedback.main_menu_verified=menu.main_menu_verified;feedback.menu_selected=menu.selection;feedback.menu_count=menu.count;feedback.menu_native_wheel=menu.wheel;
+  auto typed_menu=dc_menu::read_source(ram,RamBytes,settings.content.gameId);
++ typed_menu.native_seconds=feedback.native_seconds;
++#if defined(__ANDROID__) && defined(USE_OPENXR)
++ // Keep a bounded trace even when the later Story picker fails source recognition.
++ const dc_menu::Reader menuRam(ram,RamBytes);
++ const unsigned pickerType=menuRam.u16(0x8c2214c8);
++ const unsigned pickerPhase=menuRam.u8(0x8c2214c0);
++ const unsigned pickerStep=menuRam.u8(0x8c2214c1);
++ const unsigned pickerFlags=menuRam.u32(0x8c1b088c);
++ const bool pickerActive=pickerPhase==1&&(pickerFlags&0x4000u)!=0;
++ static unsigned pickerReports{};
++ static unsigned lastPickerKey=~0u;
++ const unsigned pickerKey=(pickerType<<16)|(pickerPhase<<8)|pickerStep;
++ if(pickerActive&&pickerKey!=lastPickerKey&&pickerReports++<64){
++  NOTICE_LOG(INPUT,"SS_MODE_SOURCE native_s=%.3f scene=%08x mode=%u type=%u phase=%u step=%u flags=%08x source=%u aim=%u",
++    feedback.native_seconds,menuRam.u32(0x8c1b014c),unsigned(menuRam.u8(0x8c1b015e)),pickerType,
++    pickerPhase,pickerStep,pickerFlags,unsigned(typed_menu.source_context),unsigned(typed_menu.aim_verified));
++ }
++ lastPickerKey=pickerActive?pickerKey:~0u;
++#endif
+  {const std::lock_guard<std::mutex> lock(s.menu_mutex);
+   // Page and row are acknowledged transaction state, not a new epoch. A code
+   // failure or family/layout change invalidates all captured host actions.
+@@ -137,12 +156,12 @@
+  log_menu(packet,feedback,menu);
+  if(typed_menu.kind==dc_menu::MenuKind::ModeSelect){
+   static unsigned reports=0;
+-  static int last_status=-1,last_row=-1,last_column=-1;
++  static int last_status=-1,last_row=-1,last_column=-1,last_buttons=-1;
+   const int status=int(packet.menu_action_status);
+-  if(reports<120&&(status!=last_status||typed_menu.row!=last_row||typed_menu.column!=last_column)){
+-   ++reports;last_status=status;last_row=typed_menu.row;last_column=typed_menu.column;
+-   NOTICE_LOG(INPUT,"SS_MODE_NATIVE native_s=%.3f aim=%d row=%d col=%d yaw=%.1f pitch=%.1f status=%d dx=%d dy=%d buttons=%u",
+-       feedback.native_seconds,int(typed_menu.aim_verified),typed_menu.row,typed_menu.column,
++  if(reports<120&&(status!=last_status||typed_menu.row!=last_row||typed_menu.column!=last_column||packet.pressed!=last_buttons)){
++   ++reports;last_status=status;last_row=typed_menu.row;last_column=typed_menu.column;last_buttons=packet.pressed;
++   NOTICE_LOG(INPUT,"SS_MODE_NATIVE native_s=%.3f type=%d aim=%d row=%d col=%d yaw=%.1f pitch=%.1f status=%d dx=%d dy=%d buttons=%u",
++       feedback.native_seconds,typed_menu.mode_type,int(typed_menu.aim_verified),typed_menu.row,typed_menu.column,
+        typed_menu.native_yaw,typed_menu.native_pitch,status,packet.dx,packet.dy,unsigned(packet.pressed));
+   }
+  }
+diff --git a/core/rend/vr/xr_host.cpp b/core/rend/vr/xr_host.cpp
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -17,6 +17,7 @@
+ #include "dreamcast/dc_ui_domain.h"
+ #include "dreamcast/dc_native_menus.h"
+ #include "dreamcast/dc_menu_controls.h"
++#include "dreamcast/dc_menu_presentation.h"
+ #include "dreamcast/dc_mouse_native.h"
+ #include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+@@ -2310,8 +2311,9 @@
+     if(ssPoseHand!=target.hand){resetSilentScopePose();ssPoseHand=target.hand;}
+     const bool ownedControlFrame=ctx&&!ctx->isRTT&&ctx->framebufferWidth==640&&ctx->framebufferHeight==480&&
+         ctx->dcCamera.supported&&ctx->dcCamera.generation&&ctx->dcCamera.submit_sequence;
++    const bool selectorPanel=ownedControlFrame&&ss::dc_menu::selector_panel(menuSource,true,ctx->dcCamera.native_seconds);
+     ssNativeControls.begin(knownNativeMenu?menuSource:ss::dc_menu::MenuFacts{},ownedControlFrame,
+-        menuGeometry?nativeMenusProof.page():-1);
++        menuGeometry?nativeMenusProof.page():-1,selectorPanel);
+     if(knownNativeMenu)target.ui_action=ssNativeControls.context();
+     else if(menuGeometry)target.ui_action.kind=nativeMenusProof.kind();
+     XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
+@@ -2553,6 +2555,7 @@
+     // Preserve the physical level even when the beam misses or its projection
+     // is unavailable; captured valid hits are independently edge-latched.
+     target.ui_select=nativeUi&&pull;
++    glm::vec2 selectorScreen(-1.f);
+     if(target.tracked&&(nativeUi||smoothed.valid||frontHeld)&&inputDomain!=ss::dc_ui::Domain::Unknown){
+         // Native panels use the tracked controller ray. A rifle-length muzzle
+         // can already be past the panel at ordinary arm's length.
+@@ -2569,7 +2572,7 @@
+             target.native_direction={d.x,d.y,d.z};target.direction_valid=native3d;
+             glm::vec2 screen(-10000.f);float dist=-1;glm::vec3 native(0);
+             bool hit=false;
+-            if(nativeUi)hit=aimAtFlatScreen(o,d,screen,dist);
++            if(nativeUi){hit=aimAtFlatScreen(o,d,screen,dist);selectorScreen=screen;}
+             else if(native3d)hit=aimAtScene(*ctx,o,d,screen,dist,&native);
+             const bool scene=aimHow&&strcmp(aimHow,"3D")==0&&dist>0&&dist<10000;
+             // Generic verified flat notices retain their confirmation.
+@@ -2592,13 +2595,6 @@
+             // the generic picker reports a HUD hit, keep only the barrel ray:
+             // no false marker on the HUD, and no loss of legitimate sky shots.
+             else {target.point_valid=scene;target.fire=gameplayFire&&native3d;}
+-            if(pull&&!ssFireWas&&menuSource.kind==ss::dc_menu::MenuKind::ModeSelect){
+-                static unsigned modeClickReports=0;
+-                if(modeClickReports++<48)
+-                    NOTICE_LOG(INPUT,"SS_MODE_CLICK proof=%d aim=%d hit=%d xy=%.1f,%.1f verb=%d row=%d col=%d",
+-                        int(menuGeometry),int(menuSource.aim_verified),int(target.point_valid),screen.x*640.f,
+-                        screen.y*480.f,int(target.ui_action.verb),target.ui_action.row,target.ui_action.column);
+-            }
+             target.native_point={native.x,native.y,native.z};
+             if(target.point_valid){
+                 auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;
+@@ -2609,6 +2605,14 @@
+                 pointerShown[target.hand]=true;
+             }
+         }
++    }
++    if(pull&&!ssFireWas&&menuSource.kind==ss::dc_menu::MenuKind::ModeSelect){
++        static unsigned modeClickReports=0;
++        if(modeClickReports++<48)
++            NOTICE_LOG(INPUT,"SS_MODE_CLICK type=%d panel=%d proof=%d aim=%d tracked=%d hit=%d xy=%.1f,%.1f verb=%d row=%d col=%d",
++                menuSource.mode_type,int(selectorPanel),int(menuGeometry),int(menuSource.aim_verified),
++                int(target.tracked),int(target.point_valid),selectorScreen.x*640.f,selectorScreen.y*480.f,
++                int(target.ui_action.verb),target.ui_action.row,target.ui_action.column);
+     }
+     ss::dc_xr::Target emitted;const bool delivered=ss::dc_xr::input_bridge().submit(target,&emitted);
+     // A controller pulse acknowledges a fresh input gesture only. Native hit
+diff --git a/core/rend/vr_reproject.cpp b/core/rend/vr_reproject.cpp
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -2690,9 +2690,12 @@
+     if(silentScope && config::VrReproject && xr::currentEye()!=nullptr && !ctx.isRTT){
+         silent_scope::dc_native_menus::NativeMenusProof menu;
+         const bool current=menu.configure(settings.content.gameId,ctx);
+-        nativeMenuRaster=silent_scope::dc_menu::raster_menu(
+-            silent_scope::dc_mouse::native_menu_snapshot(),menu.kind(),menu.page(),
+-            menu.source_context(),current,true,ctx.isRTT);
++        const auto source=silent_scope::dc_mouse::native_menu_snapshot();
++        const bool nativeCanvas=ctx.framebufferWidth==640&&ctx.framebufferHeight==480&&ctx.dcCamera.supported&&
++            ctx.dcCamera.generation&&ctx.dcCamera.submit_sequence;
++        nativeMenuRaster=silent_scope::dc_menu::selector_panel(source,nativeCanvas,ctx.dcCamera.native_seconds)
++            ||silent_scope::dc_menu::raster_menu(source,menu.kind(),menu.page(),
++                menu.source_context(),current,true,ctx.isRTT);
+     }
+     const bool active = config::VrReproject && !ctx.isRTT && !nativeMenuRaster
+         &&(!silentScope||(submittedCamera.valid&&silentScopeWorldGeometry(ctx)));

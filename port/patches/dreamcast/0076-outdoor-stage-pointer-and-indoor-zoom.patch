@@ -1,0 +1,213 @@
+--- a/core/dreamcast/dc_menu_actions.h
++++ b/core/dreamcast/dc_menu_actions.h
+@@ -38,6 +38,7 @@
+ constexpr std::uint8_t NativeLeft=4,NativeRight=2,NativeMiddle=8;
+ inline constexpr std::uint32_t ArcadeModeContext=0x100;
+ inline constexpr std::uint32_t StoryRouteContext=0x101;
++inline constexpr std::uint32_t OutdoorStageContext=0x106;
+ struct ModeGoal {bool valid{};double yaw{},pitch{};int row{-1},column{-1};};
+ inline int mode_region(double yaw,double pitch)noexcept {
+  if(!std::isfinite(yaw)||!std::isfinite(pitch))return -1;
+@@ -51,7 +52,21 @@
+  if(!std::isfinite(yaw))return -1;
+  return yaw>1950?0:yaw> -1790?1:2;
+ }
++inline int mode_region_for_type(int type,double yaw,double pitch)noexcept {
++ if(type==0)return mode_region(yaw,pitch);
++ if(type==1)return story_route_region(yaw);
++ if(type!=6||!std::isfinite(yaw)||!std::isfinite(pitch))return -1;
++ // Native Outdoor stage selector (072666), before display warping.
++ const int column=yaw>=1568?0:yaw>=-1920?1:2;
++ const int row=pitch>=0?0:pitch>=-1408?1:2;
++ return row*3+column;
++}
+ inline ModeGoal mode_goal(int type,int row,int column=-1)noexcept {
++ if(type==6){
++  if(row<0||row>=9||column!=-1)return {};
++  constexpr double yaw[]{3200,0,-3350},pitch[]{672,-704,-2300};
++  return {true,yaw[row%3],pitch[row/3],row,-1};
++ }
+  if(type==1){
+   if(row<0||row>=3||column!=-1)return {};
+   constexpr double centers[]{3000,0,-3000};
+@@ -65,9 +80,8 @@
+  return g;
+ }
+ inline bool mode_position_ack(const MenuFacts& f,const ModeGoal& g)noexcept {
+- const bool same_cell=f.mode_type==0
+-   ?mode_region(f.native_yaw,f.native_pitch)==g.row&&(g.row!=1||f.column==g.column)
+-   :f.mode_type==1&&story_route_region(f.native_yaw)==g.row;
++ const bool same_cell=mode_region_for_type(f.mode_type,f.native_yaw,f.native_pitch)==g.row
++   &&(f.mode_type!=0||g.row!=1||f.column==g.column);
+  return g.valid&&f.row==g.row&&same_cell
+   // A relative mouse count moves by a discrete angle step. The closest
+   // reachable position can be half a step from the nominal tile center.
+--- a/core/dreamcast/dc_menu_aim.h
++++ b/core/dreamcast/dc_menu_aim.h
+@@ -16,8 +16,7 @@
+  void reset()noexcept{*this=AimServo{};}
+  AimPacket poll(double host,double native,std::uint64_t sequence,const MenuFacts& f,const ModeGoal& goal){
+   if(fault_)return {0,0,false,true};
+-  const bool valid_region=f.mode_type==0?mode_region(goal.yaw,goal.pitch)==goal.row
+-      :f.mode_type==1&&story_route_region(goal.yaw)==goal.row;
++  const bool valid_region=mode_region_for_type(f.mode_type,goal.yaw,goal.pitch)==goal.row;
+   if(!goal.valid||!f.verified||!f.aim_verified||f.kind!=MenuKind::ModeSelect
+       ||!std::isfinite(goal.yaw)||!std::isfinite(goal.pitch)||std::abs(goal.yaw)>5500||std::abs(goal.pitch)>4300
+       ||goal.row<0||goal.row>=f.row_count||!valid_region
+--- a/core/dreamcast/dc_menu_presentation.h
++++ b/core/dreamcast/dc_menu_presentation.h
+@@ -2,7 +2,7 @@
+ #pragma once
+ #include "dc_menu_actions.h"
+ namespace silent_scope::dc_menu {
+-// The two source-verified selectors have a fixed 640x480 pointer plane.
++// These source-verified selectors have a fixed 640x480 pointer plane.
+ // Limit source ownership to a nearby main frame from the same native clock.
+ inline bool selector_panel(const MenuFacts& source,bool native_canvas,double frame_seconds){
+     if(!native_canvas||!source.verified||!source.interactive||!source.context_active||
+@@ -11,7 +11,8 @@
+        !std::isfinite(source.native_seconds)||source.native_seconds<0||
+        std::abs(source.native_seconds-frame_seconds)>.15)return false;
+     return (source.mode_type==0&&source.source_context==ArcadeModeContext)||
+-           (source.mode_type==1&&source.source_context==StoryRouteContext);
++           (source.mode_type==1&&source.source_context==StoryRouteContext)||
++           (source.mode_type==6&&source.source_context==OutdoorStageContext);
+ }
+ // Other menus require both a current native art proof and the source snapshot.
+ inline bool raster_menu(const MenuFacts& source, MenuKind rendered_kind,
+--- a/core/dreamcast/dc_menu_source.h
++++ b/core/dreamcast/dc_menu_source.h
+@@ -46,6 +46,8 @@
+ inline constexpr ControlGuard ModeMouseTables{0x8c0c7a64,0x3c,0x2a32ee5499087bdcull};
+ inline constexpr ControlGuard StoryRoutePicker{0x8c070eda,0x31a,0x19c5af459fd1062cull};
+ inline constexpr ControlGuard StoryRouteOwner{0x8c075ef6,0x5a,0x42cd95c65b846e47ull};
++inline constexpr ControlGuard OutdoorStagePicker{0x8c072098,0x7b8,0x6f5d1815fe3516caull};
++inline constexpr ControlGuard OutdoorStageOwner{0x8c080480,0xb4,0x4a9365e07518e72cull};
+ inline bool arcade_mode_owner(const Reader& r){
+  return r.u8(0x8c1b014c)==6&&r.u8(0x8c1b014d)==1&&r.u8(0x8c1b014e)==1&&r.u16(0x8c2214c8)==0;
+ }
+@@ -53,9 +55,13 @@
+  return r.u8(0x8c1b014c)==6&&r.u8(0x8c1b014d)==5&&r.u8(0x8c1b015e)==0
+      &&r.u16(0x8c2214c8)==1&&(r.u32(0x8c1b088c)&0x00404000u)==0x00404000u;
+ }
++inline bool outdoor_stage_owner(const Reader& r){
++ return r.u32(0x8c1b014c)==0x01070208u&&r.u16(0x8c2214c8)==6
++     &&(r.u32(0x8c1b088c)&0x4000u)!=0;
++}
+ // The game draws these menus with its main lens, including entry animations.
+ inline bool stock_picker_projection(const Reader& r){
+- return arcade_mode_owner(r)||story_route_owner(r);
++ return arcade_mode_owner(r)||story_route_owner(r)||outdoor_stage_owner(r);
+ }
+ inline bool code_matches(const Reader& r,ControlGuard g){
+  if(!r.address(g.address,g.bytes))return false;
+@@ -121,15 +127,22 @@
+   f.confirm_button=NativeMiddle; // 080720 calls08c454; Left is not consumed.
+  }else if(kind==MenuKind::ModeSelect){
+   const bool route=story_route_owner(r);
+-  if(!route&&!arcade_mode_owner(r))return {};
++  const bool outdoor=outdoor_stage_owner(r);
++  const bool arcade=arcade_mode_owner(r);
++  if(!route&&!outdoor&&!arcade)return {};
+   const auto phase=r.u8(0x8c2214c0),inner=r.u8(0x8c2214c1);
+-  f.mode_type=route?1:0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);
+-  f.row_count=route?3:5;f.column_count=route?0:2;
+-  if(phase>2||inner>(route?6:5)||f.row<0||f.row>=f.row_count)return {};
+-  f.source_context=route?StoryRouteContext:0x100;
+-  f.context_active=f.interactive=phase==1&&inner==(route?4:3);
++  f.mode_type=outdoor?6:route?1:0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);
++  f.row_count=outdoor?9:route?3:5;f.column_count=arcade?2:0;
++  if(phase>2||inner>(arcade?5:6)||f.row>=f.row_count||
++     (f.row<0&&(!outdoor||f.row!=-1||inner>=4))||(outdoor&&f.variant!=10))return {};
++  f.source_context=outdoor?OutdoorStageContext:route?StoryRouteContext:ArcadeModeContext;
++  f.context_active=f.interactive=phase==1&&inner==(arcade?3:4);
+   f.native_pitch=r.s16(0x8c1b0860);f.native_yaw=r.s16(0x8c1b0862);
+-  f.column=!route&&f.row==1?(f.native_yaw<0?1:0):-1;f.available_regions=(1u<<f.row_count)-1;
++  f.column=arcade&&f.row==1?(f.native_yaw<0?1:0):-1;
++  if(outdoor){
++   const auto progress=r.u32(0x8c271970);
++   for(int stage=0;stage<f.row_count;++stage)if(progress>>stage)f.available_regions|=1u<<stage;
++  }else f.available_regions=(1u<<f.row_count)-1;
+   f.confirm_button=NativeLeft;f.back_button=route?0:NativeRight;
+   const auto peripheral=r.u32(0x8c1d54ac);const auto speed=r.u32(0x8c26fe1c);
+   f.aim_profile=1469598103934665603ull;
+@@ -175,6 +188,13 @@
+  Reader r(ram,bytes);if(title!="T9507N"||!r.valid())return {};
+  if(!code_matches(r,CommonDirections)||!code_matches(r,MouseAxes)||!code_matches(r,AxisRepeat)||!code_matches(r,MouseFrame))return {};
+  if(r.s32(0x8c1e1d68)<0)return {};
++ if(outdoor_stage_owner(r)){
++  if(!code_matches(r,OutdoorStageOwner)||!code_matches(r,OutdoorStagePicker)
++      ||!code_matches(r,ModeUpdater)||!code_matches(r,ModeMouseAim)||!code_matches(r,ModeMouseTables))return {};
++  auto outdoor=decode_state(r,MenuKind::ModeSelect);
++  outdoor.verified=outdoor.kind==MenuKind::ModeSelect;
++  return outdoor;
++ }
+  if(story_route_owner(r)){
+   if(!code_matches(r,StoryRouteOwner)||!code_matches(r,StoryRoutePicker)
+       ||!code_matches(r,ModeUpdater)||!code_matches(r,ModeMouseAim)||!code_matches(r,ModeMouseTables))return {};
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -27,7 +27,10 @@
+   }
+   if(!frame_||!facts.verified||!facts.context_active||!facts.context_revision)return;
+   using K=dc_menu::MenuKind;using V=dc_menu::MenuVerb;
+-  if(facts.back_button)buttons_.push_back({{8,80,72,116},facts.kind==K::Options?"Cancel":"Back",action(V::Back),facts.interactive});
++  if(facts.back_button){
++   const auto bounds=facts.source_context==dc_menu::OutdoorStageContext?Rect{8,418,72,454}:Rect{8,80,72,116};
++   buttons_.push_back({bounds,facts.kind==K::Options?"Cancel":"Back",action(V::Back),facts.interactive});
++  }
+   if(facts.kind==K::Training&&facts.confirm_button){auto start=action(V::Confirm);start.row=training_row_;start.column=training_column_;
+    buttons_.push_back({{568,80,632,116},"Start",start,facts.interactive});}
+   if(facts.kind==K::Options&&facts.exit_button)buttons_.push_back({{568,80,632,116},"Exit",action(V::Exit),facts.interactive});
+@@ -59,6 +62,19 @@
+    if(!button.enabled)return context();
+    auto a=button.action;if(a.kind==K::Training&&a.verb==V::Confirm){a.row=training_row_;a.column=training_column_;}return a;
+   }
++  if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==6&&
++     facts_.source_context==dc_menu::OutdoorStageContext&&facts_.interactive&&facts_.aim_verified){
++   // Authored Stage Select card faces, in the stock 640x480 raster.
++   constexpr float left[]{54,243,433},right[]{230,420,611};
++   for(int row=0;row<3;++row)for(int col=0;col<3;++col){
++    const int stage=row*3+col;
++    if(Rect{left[col],169.f+76*row,right[col],235.f+76*row}.hit(x,y)&&
++       (facts_.available_regions&(1u<<stage))){
++     auto hit=action(V::Focus);hit.row=stage;return hit;
++    }
++   }
++   return context();
++  }
+   // Arcade's original panels have a fixed raster layout. The Quest can
+   // reject the desktop art proof while the native selector remains active.
+   if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==0&&
+--- a/core/dreamcast/dc_scope_camera.h
++++ b/core/dreamcast/dc_scope_camera.h
+@@ -7,13 +7,17 @@
+ namespace silent_scope::dreamcast {
+ inline std::atomic<float> scope_camera_magnification{1.f};
+ inline constexpr uint32_t ScopeWorldFocalBits = 0x465363f2;
++inline constexpr uint32_t IndoorScopeWorldFocalBits = 0x461a8a85;
+ inline constexpr uint32_t ScopeSourceAddress = 0x8c1b010c;
++inline constexpr bool known_scope_world_focal(uint32_t bits) {
++    return bits == ScopeWorldFocalBits || bits == IndoorScopeWorldFocalBits;
++}
+ 
+ inline FocalSetterDecision decide_scope_camera(float scale, uint32_t loaded, uint32_t caller,
+         uint32_t mode, uint32_t fpscr, bool guard, bool fpu_disabled) {
+     FocalSetterDecision result{loaded, false, false};
+     if (!guard || fpu_disabled || caller != FocalSetterProbe::CallerReturn || mode != 1 ||
+-        loaded != ScopeWorldFocalBits || (fpscr & ((1u << 19) | (1u << 20))) ||
++        !known_scope_world_focal(loaded) || (fpscr & ((1u << 19) | (1u << 20))) ||
+         (scale != .2f && scale != .5f && scale != 1.f && scale != 2.f && scale != 5.f))
+         return result;
+     result.eligible = true;
+--- a/core/dreamcast/dc_scope_visibility.h
++++ b/core/dreamcast/dc_scope_visibility.h
+@@ -31,7 +31,7 @@
+     if(!f.code_guard||f.mode!=1||f.frustum!=ScopeVisibilitySite::Frustum||
+         f.live_return!=ScopeVisibilitySite::TargetPc||
+         (f.outer_return!=0x8c074898&&f.outer_return!=0x8c0748e8)||
+-        f.original_span!=200||f.scope_source!=ScopeWorldFocalBits)return out;
++        f.original_span!=200||!known_scope_world_focal(f.scope_source))return out;
+     // Use the SDK focal actually applied to this native camera, not a newer XR
+     // preference that could change between projection and visibility setup.
+     float stock;std::memcpy(&stock,&f.scope_source,4);

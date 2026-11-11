@@ -1,0 +1,156 @@
+--- a/core/cfg/cfg.cpp
++++ b/core/cfg/cfg.cpp
+@@ -2,6 +2,8 @@
+ #include "ini.h"
+ #include "stdclass.h"
+ #include <cerrno>
++#include <mutex>
++#include "dreamcast/dc_persistence.h"
+ 
+ namespace config
+ {
+@@ -10,25 +12,30 @@
+ static bool autoSaving = true;
+ static IniFile cfgdb;
+ 
++static std::recursive_mutex& configurationMutex() {
++    static std::recursive_mutex value;return value;
++}
+ static void saveFile()
+ {
+-	hostfs::File* cfgfile = hostfs::storage().openFile(cfgPath.c_str(), "wt");
+-	if (!cfgfile) {
+-		WARN_LOG(COMMON, "Error: Unable to open file '%s' for saving", cfgPath.c_str());
+-	}
+-	else {
+-		cfgdb.save(cfgfile);
+-		delete cfgfile;
+-	}
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
++    try {
++        std::string serialized;cfgdb.save(serialized);
++        if (!silent_scope::dc_persistence::save_config(cfgPath,serialized))
++            WARN_LOG(COMMON, "Silent Scope settings save failed: %s", silent_scope::dc_persistence::last_error().c_str());
++    } catch (...) {
++        silent_scope::dc_persistence::record_error("Cannot serialize console settings");
++    }
+ }
+ 
+ static void autoSave() {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	if (autoSaving)
+ 		saveFile();
+ }
+ 
+ bool open()
+ {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	if (get_writable_config_path("").empty())
+ 		// Config dir not set (android onboarding)
+ 		return false;
+@@ -59,76 +66,93 @@
+ }
+ 
+ void saveStr(const std::string& section, const std::string& key, const std::string& value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value);
+ 	autoSave();
+ }
+ 
+ std::string loadStr(const std::string& section, const std::string& key, const std::string& def) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getString(section, key, def);
+ }
+ 
+ void saveInt(const std::string& section, const std::string& key, int value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value);
+ 	autoSave();
+ }
+ 
+ int loadInt(const std::string& section, const std::string& key, int def) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getInt(section, key, def);
+ }
+ 
+ int64_t loadInt64(const std::string& section, const std::string& key, int64_t def) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getInt64(section, key, def);
+ }
+ void saveInt64(const std::string& section, const std::string& key, int64_t value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value);
+ 	autoSave();
+ }
+ 
+ void saveBool(const std::string& section, const std::string& key, bool value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value);
+ 	autoSave();
+ }
+ 
+ bool loadBool(const std::string& section, const std::string& key, bool def) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getBool(section, key, def);
+ }
+ 
+ void setTransient(const std::string& section, const std::string& key, const std::string& value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value, true);
+ }
+ 
+ bool isTransient(const std::string& section, const std::string& key) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.isTransient(section, key);
+ }
+ 
+ bool hasSection(const std::string& section) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.hasSection(section);
+ }
+ 
+ void deleteSection(const std::string& section) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.deleteSection(section);
+ }
+ 
+ void deleteEntry(const std::string& section, const std::string& key) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.deleteEntry(section, key);
+ }
+ 
+ void setAutoSave(bool autoSaving)
+ {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	config::autoSaving = autoSaving;
+ 	if (autoSaving)
+ 		saveFile();
+ }
+ 
+ void saveFloat(const std::string& section, const std::string& key, float value) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	cfgdb.set(section, key, value);
+ 	autoSave();
+ }
+ float loadFloat(const std::string& section, const std::string& key, float def) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getFloat(section, key, def);
+ }
+ 
+ std::vector<std::string> getEntries(const std::string& section) {
++	std::lock_guard<std::recursive_mutex> lock(configurationMutex());
+ 	return cfgdb.getEntryNames(section);
+ }
+ 
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -337,7 +337,8 @@
+ 
+ target_include_directories(${PROJECT_NAME} PRIVATE core core/deps core/deps/stb core/deps/json core/deps/asio/asio/include)
+ # Silent Scope owned native scope image and accepted procedural rifle.
+-target_sources(${PROJECT_NAME} PRIVATE core/dreamcast/dc_scope.cpp core/dreamcast/rifle_renderer.cpp)
++target_sources(${PROJECT_NAME} PRIVATE core/dreamcast/dc_scope.cpp core/dreamcast/rifle_renderer.cpp
++    core/dreamcast/dc_settings.cpp core/dreamcast/dc_persistence.cpp)
+ set_source_files_properties(core/dreamcast/rifle_renderer.cpp PROPERTIES COMPILE_DEFINITIONS SILENT_SCOPE_FLYCAST_GL=1)
+ if(LIBRETRO)
+ 	target_include_directories(${PROJECT_NAME} PRIVATE shell/libretro)

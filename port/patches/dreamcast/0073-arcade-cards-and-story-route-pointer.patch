@@ -1,0 +1,163 @@
+diff --git a/core/dreamcast/dc_menu_actions.h b/core/dreamcast/dc_menu_actions.h
+--- a/core/dreamcast/dc_menu_actions.h
++++ b/core/dreamcast/dc_menu_actions.h
+@@ -35,6 +35,7 @@
+  std::uint8_t confirm_button{},back_button{},exit_button{};
+ };
+ constexpr std::uint8_t NativeLeft=4,NativeRight=2,NativeMiddle=8;
++inline constexpr std::uint32_t StoryRouteContext=0x101;
+ struct ModeGoal {bool valid{};double yaw{},pitch{};int row{-1},column{-1};};
+ inline int mode_region(double yaw,double pitch)noexcept {
+  if(!std::isfinite(yaw)||!std::isfinite(pitch))return -1;
+@@ -43,7 +44,17 @@
+  if(pitch> -2500)return 0;
+  return yaw>1120?2:yaw> -1120?3:4;
+ }
++inline int story_route_region(double yaw)noexcept {
++ // The branch selector 070eda divides the three routes using raw yaw.
++ if(!std::isfinite(yaw))return -1;
++ return yaw>1950?0:yaw> -1790?1:2;
++}
+ inline ModeGoal mode_goal(int type,int row,int column=-1)noexcept {
++ if(type==1){
++  if(row<0||row>=3||column!=-1)return {};
++  constexpr double centers[]{3000,0,-3000};
++  return {true,centers[row],0,row,-1};
++ }
+  if(type!=0||row<0||row>4)return {};
+  ModeGoal g;g.valid=true;g.row=row;g.column=column;
+  if(row==0){if(column!=-1)return {};}
+@@ -52,9 +63,10 @@
+  return g;
+ }
+ inline bool mode_position_ack(const MenuFacts& f,const ModeGoal& g)noexcept {
+- return g.valid&&f.mode_type==0&&f.row==g.row
+-  &&mode_region(f.native_yaw,f.native_pitch)==g.row
+-  &&(g.row!=1||f.column==g.column)
++ const bool same_cell=f.mode_type==0
++   ?mode_region(f.native_yaw,f.native_pitch)==g.row&&(g.row!=1||f.column==g.column)
++   :f.mode_type==1&&story_route_region(f.native_yaw)==g.row;
++ return g.valid&&f.row==g.row&&same_cell
+   // A relative mouse count moves by a discrete angle step. The closest
+   // reachable position can be half a step from the nominal tile center.
+   &&std::abs(f.native_yaw-g.yaw)<=2+std::abs(f.aim_gain_yaw)*.5
+diff --git a/core/dreamcast/dc_menu_aim.h b/core/dreamcast/dc_menu_aim.h
+--- a/core/dreamcast/dc_menu_aim.h
++++ b/core/dreamcast/dc_menu_aim.h
+@@ -16,9 +16,11 @@
+  void reset()noexcept{*this=AimServo{};}
+  AimPacket poll(double host,double native,std::uint64_t sequence,const MenuFacts& f,const ModeGoal& goal){
+   if(fault_)return {0,0,false,true};
+-  if(!goal.valid||!f.verified||!f.aim_verified||f.kind!=MenuKind::ModeSelect||f.mode_type!=0
++  const bool valid_region=f.mode_type==0?mode_region(goal.yaw,goal.pitch)==goal.row
++      :f.mode_type==1&&story_route_region(goal.yaw)==goal.row;
++  if(!goal.valid||!f.verified||!f.aim_verified||f.kind!=MenuKind::ModeSelect
+       ||!std::isfinite(goal.yaw)||!std::isfinite(goal.pitch)||std::abs(goal.yaw)>5500||std::abs(goal.pitch)>4300
+-      ||goal.row<0||goal.row>4||mode_region(goal.yaw,goal.pitch)!=goal.row
++      ||goal.row<0||goal.row>=f.row_count||!valid_region
+       ||!std::isfinite(host)||!std::isfinite(native)||host<0||native<0||host<last_host_||native<last_native_
+       ||!std::isfinite(f.native_yaw)||!std::isfinite(f.native_pitch)||!gain(f.aim_gain_yaw)||!gain(f.aim_gain_pitch))return fail();
+   last_host_=host;last_native_=native;
+diff --git a/core/dreamcast/dc_menu_controls.h b/core/dreamcast/dc_menu_controls.h
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -39,6 +39,14 @@
+   }
+   if(facts.kind==K::Dialog&&facts.source_context>=2&&facts.source_context<=5&&facts.confirm_button)
+    buttons_.push_back({{512,80,632,116},"Continue",action(V::Confirm),facts.interactive});
++  if(facts.kind==K::ModeSelect&&facts.source_context==dc_menu::StoryRouteContext){
++   constexpr const char* labels[]{"Tower Building","Air Battle","Stadium"};
++   for(int row=0;row<3;++row){
++    auto focus=action(V::Focus);focus.row=row;
++    const float x=74.f+168.f*row;
++    buttons_.push_back({{x,418,x+156,456},labels[row],focus,facts.interactive&&facts.aim_verified});
++   }
++  }
+  }
+  const std::vector<Button>& buttons()const{return buttons_;}
+  dc_menu::MenuAction context()const{auto a=action(dc_menu::MenuVerb::None);return a;}
+diff --git a/core/dreamcast/dc_menu_source.h b/core/dreamcast/dc_menu_source.h
+--- a/core/dreamcast/dc_menu_source.h
++++ b/core/dreamcast/dc_menu_source.h
+@@ -44,6 +44,12 @@
+ inline constexpr ControlGuard ModeOwner{0x8c076100,0x12c,0xf56552becca1f1dcull};
+ inline constexpr ControlGuard ModeMouseAim{0x8c073b80,0x2fe,0xb720ec9b33465133ull};
+ inline constexpr ControlGuard ModeMouseTables{0x8c0c7a64,0x3c,0x2a32ee5499087bdcull};
++inline constexpr ControlGuard StoryRoutePicker{0x8c070eda,0x31a,0x19c5af459fd1062cull};
++inline constexpr ControlGuard StoryRouteOwner{0x8c075ef6,0x5a,0x42cd95c65b846e47ull};
++inline bool story_route_owner(const Reader& r){
++ return r.u8(0x8c1b014c)==6&&r.u8(0x8c1b014d)==5&&r.u8(0x8c1b015e)==0
++     &&r.u16(0x8c2214c8)==1&&(r.u32(0x8c1b088c)&0x00404000u)==0x00404000u;
++}
+ inline bool code_matches(const Reader& r,ControlGuard g){
+  if(!r.address(g.address,g.bytes))return false;
+  std::uint64_t h=1469598103934665603ull;
+@@ -107,16 +113,17 @@
+   f.context_active=f.interactive=r.u32(0x8c272544)==1&&r.u32(0x8c26fda8)==1&&r.u32(0x8c0ee860)==0;
+   f.confirm_button=NativeMiddle; // 080720 calls08c454; Left is not consumed.
+  }else if(kind==MenuKind::ModeSelect){
+-  // Initial Arcade mode chooser only. Later selector types need their own
+-  // protocol and cannot inherit a captured type0 action.
+-  if(r.u8(0x8c1b014c)!=6||r.u8(0x8c1b014d)!=1||r.u8(0x8c1b014e)!=1||r.u16(0x8c2214c8)!=0)return {};
++  const bool route=story_route_owner(r);
++  if(!route&&(r.u8(0x8c1b014c)!=6||r.u8(0x8c1b014d)!=1||r.u8(0x8c1b014e)!=1||r.u16(0x8c2214c8)!=0))return {};
+   const auto phase=r.u8(0x8c2214c0),inner=r.u8(0x8c2214c1);
+-  f.mode_type=0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);f.row_count=5;f.column_count=2;
+-  if(phase>2||inner>5||f.row<0||f.row>4)return {};
+-  f.source_context=0x100;f.context_active=f.interactive=phase==1&&inner==3;
++  f.mode_type=route?1:0;f.variant=r.s16(0x8c2214cc);f.row=r.s16(0x8c2214de);
++  f.row_count=route?3:5;f.column_count=route?0:2;
++  if(phase>2||inner>(route?6:5)||f.row<0||f.row>=f.row_count)return {};
++  f.source_context=route?StoryRouteContext:0x100;
++  f.context_active=f.interactive=phase==1&&inner==(route?4:3);
+   f.native_pitch=r.s16(0x8c1b0860);f.native_yaw=r.s16(0x8c1b0862);
+-  f.column=f.row==1?(f.native_yaw<0?1:0):-1;f.available_regions=31;
+-  f.confirm_button=NativeLeft;f.back_button=NativeRight;
++  f.column=!route&&f.row==1?(f.native_yaw<0?1:0):-1;f.available_regions=(1u<<f.row_count)-1;
++  f.confirm_button=NativeLeft;f.back_button=route?0:NativeRight;
+   const auto peripheral=r.u32(0x8c1d54ac);const auto speed=r.u32(0x8c26fe1c);
+   f.aim_profile=1469598103934665603ull;
+   for(auto value:{r.u32(0x8c271ffc),speed,r.u32(0x8c26fe18),std::uint32_t(r.u8(0x8c26fdc7)&0x10),
+@@ -161,6 +168,13 @@
+  Reader r(ram,bytes);if(title!="T9507N"||!r.valid())return {};
+  if(!code_matches(r,CommonDirections)||!code_matches(r,MouseAxes)||!code_matches(r,AxisRepeat)||!code_matches(r,MouseFrame))return {};
+  if(r.s32(0x8c1e1d68)<0)return {};
++ if(story_route_owner(r)){
++  if(!code_matches(r,StoryRouteOwner)||!code_matches(r,StoryRoutePicker)
++      ||!code_matches(r,ModeUpdater)||!code_matches(r,ModeMouseAim)||!code_matches(r,ModeMouseTables))return {};
++  auto route=decode_state(r,MenuKind::ModeSelect);
++  route.verified=route.kind==MenuKind::ModeSelect;
++  return route;
++ }
+  MenuKind kind=MenuKind::None;
+  if(r.u8(0x8c1b014d)==5&&r.u32(0x8c272030)==1){
+   if(!code_matches(r,OptionsControl)||!code_matches(r,OptionsRecords)||!code_matches(r,VmuStatus)||!code_matches(r,VmuPointer))return {};
+diff --git a/core/dreamcast/dc_mode_select.h b/core/dreamcast/dc_mode_select.h
+--- a/core/dreamcast/dc_mode_select.h
++++ b/core/dreamcast/dc_mode_select.h
+@@ -130,9 +130,23 @@
+   const float ab=edge(a,b),bc=edge(b,c),ca=edge(c,a);return (ab>=0&&bc>=0&&ca>=0)||(ab<=0&&bc<=0&&ca<=0);
+  }
+  dc_menu::MenuAction hit(float x,float y)const{if(!valid_||!std::isfinite(x)||!std::isfinite(y))return {};
++  const auto action=[](unsigned cell){
++   dc_menu::MenuAction a;
++   a.kind=dc_menu::MenuKind::ModeSelect;a.verb=dc_menu::MenuVerb::Focus;
++   a.row=cell==0?0:cell<=2?1:int(cell)-1;
++   a.column=cell==1?0:cell==2?1:-1;
++   return a;
++  };
+   for(unsigned i=0;i<6;++i){const auto& p=hits_[i];if(!triangle_contains(x,y,p[0],p[1],p[2])&&!triangle_contains(x,y,p[2],p[1],p[3]))continue;
+-   dc_menu::MenuAction a;a.kind=dc_menu::MenuKind::ModeSelect;a.verb=dc_menu::MenuVerb::Focus;a.row=i?i<3?1:int(i)-1:0;a.column=i==1?0:i==2?1:-1;return a;
+-  }return {};
++   return action(i);
++  }
++  // The two group titles share the same framed cards as the smaller
++  // difficulty/location labels. Extend each label's column up to its title.
++  if(x>=148.f&&x<492.f){
++   if(y>=87.f&&y<155.f)return action(x<320.f?1:2);
++   if(y>=327.f&&y<402.f)return action(x<264.f?3:x<376.f?4:5);
++  }
++  return {};
+  }
+ };
+ }

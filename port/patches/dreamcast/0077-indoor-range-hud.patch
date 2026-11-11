@@ -1,0 +1,128 @@
+--- a/core/dreamcast/dc_hud.h
++++ b/core/dreamcast/dc_hud.h
+@@ -81,18 +81,21 @@
+ }
+ template<class Polygon,class Vertex> Decision classify_detailed(const Gate& g,const Polygon& p,const Vertex& a,const Vertex& b,const Vertex& c){
+     if(!enabled(g)||p.isp.full!=0xc8800000||p.tileclip!=0x00100200)return {};
+-    // The walk-to-window prompt blinks in red using this exact 10x20
+-    // font cell. Its screen-space triangles have no world lens owner.
++    // These native 10x20 font cells have no world lens owner.
+     if(p.tcw.full==0x500c0000&&p.tsp.full==0x9491a4ed&&p.pcw.full==0x828c000a){
+         const float x=std::min({a.x,b.x,c.x}),y=std::min({a.y,b.y,c.y});
+         const float u=std::min({a.u,b.u,c.u}),v=std::min({a.v,b.v,c.v});
++        // Indoor emits extra score digits at the end of the second HUD row.
++        // Accept only digit atlas cells in the two rightmost native slots.
++        const bool indoor_digit=(x==620.f||x==630.f)&&y==50.f&&v==.0625f&&u<=9.f/16.f;
++        const uint8_t tint=indoor_digit&&a.col[1]==255?255:0;
+         unsigned corners=0;
+         for(const auto* vertex:{&a,&b,&c}){
+             const bool right=vertex->x==x+10,bottom=vertex->y==y+20;
+             if((!right&&vertex->x!=x)||(!bottom&&vertex->y!=y)||
+                vertex->u!=u+(right?.0625f:0.f)||vertex->v!=v+(bottom?.0625f:0.f)||
+                std::abs(vertex->z-.729927003384f)>2e-7f||!std::isfinite(vertex->z)||
+-               vertex->col[0]!=255||vertex->col[1]!=0||vertex->col[2]!=0||vertex->col[3]!=255)break;
++               vertex->col[0]!=255||vertex->col[1]!=tint||vertex->col[2]!=tint||vertex->col[3]!=255)break;
+             corners|=1u<<((right?1:0)+(bottom?2:0));
+         }
+         if(x>=0&&x<=630&&y>=0&&y<=460&&u>=0&&u<=.9375f&&v>=0&&v<=.9375f&&
+--- a/core/dreamcast/dc_hud_message.h
++++ b/core/dreamcast/dc_hud_message.h
+@@ -11,8 +11,10 @@
+     std::array<std::size_t,Slots> polygons_{};
+     std::array<char,Slots> glyphs_{};
+     template<class Polygon> static bool material(const Polygon& p,bool plate){
+-        return p.isp.full==0xc8800000&&p.tileclip==0x00100200&&p.tsp.full==(plate?0x9491a4e4u:0x9491a4edu)&&
+-            p.pcw.full==(plate?0x828c0002u:0x828c000au)&&(plate||p.tcw.full==0x500c0000);
++        if(p.isp.full!=0xc8800000||p.tileclip!=0x00100200)return false;
++        // Indoor inherits the font's TSP on the same untextured plate.
++        if(plate)return p.pcw.full==0x828c0002u&&(p.tsp.full==0x9491a4e4u||p.tsp.full==0x9491a4edu);
++        return p.pcw.full==0x828c000au&&p.tsp.full==0x9491a4edu&&p.tcw.full==0x500c0000;
+     }
+     template<class Context,class Polygon> static bool quad(const Context& ctx,const Polygon& p,unsigned slot,char glyph){
+         const bool plate=slot==0;if(!material(p,plate)||p.count!=4||uint64_t(p.first)+4>ctx.verts.size())return false;
+@@ -72,6 +74,7 @@
+         };
+         if(!((row_matches(0,"Hurry up!")&&row_matches(1,{}))||
+              (row_matches(0,"Calm down!")&&row_matches(1,{}))||
++             (row_matches(0,"Bad luck!")&&row_matches(1,{}))||
+              (row_matches(0,"You've lost your touch.")&&row_matches(1,{}))||
+              (row_matches(0,"Watch out!")&&row_matches(1,"The enemy is going to shoot!"))))return false;
+         frame_=&ctx;generation_=ctx.dcCamera.generation;submission_=ctx.dcCamera.submit_sequence;valid_=true;return true;
+--- a/core/dreamcast/dc_decoded_lens.h
++++ b/core/dreamcast/dc_decoded_lens.h
+@@ -9,18 +9,30 @@
+     bool has_problem{};unsigned problem_list{};size_t problem_polygon{};std::array<uint32_t,3> problem_vertices{};
+     uint64_t skipped_never_polygons{},skipped_primers{};
+ };
++struct IgnoreLensProblem {
++    void operator()(unsigned, size_t, uint32_t, uint32_t, uint32_t) const noexcept {}
++};
+ // Render-thread read-only finalization over immutable TA packet provenance.
+ // The decoded UI mask must prove each exception, including the complete native
+ // scope group. All other finite native triangles, including constant-q world
+ // planes, must have coherent source ownership. No current SDK or setting reads.
+-template<class Context,class UiMask> DecodedLensResult finalize_decoded_lens(const Context& ctx,const UiMask& ui){
++template<class Context,class UiMask,class OnProblem=IgnoreLensProblem>
++DecodedLensResult finalize_decoded_lens(const Context& ctx,const UiMask& ui,OnProblem on_problem={}){
+     DecodedLensResult out;
+     if(ctx.isRTT||ctx.framebufferWidth!=640||ctx.framebufferHeight!=480||!ctx.dcCamera.supported
+         ||!ctx.dcCamera.generation||!ctx.dcCamera.submit_sequence)return out;
+     if(ctx.verts.size()>65536||ctx.idx.size()>262144||ctx.dcVertexLens.size()!=ctx.verts.size()){out.malformed=true;return out;}
+     if(!ctx.modtrig.empty()){out.unsupported_modifiers=true;return out;}
+     SubmittedLens owned;
+-    auto problem=[&](unsigned list,size_t polygon,uint32_t a,uint32_t b,uint32_t c){if(!out.has_problem){out.has_problem=true;out.problem_list=list;out.problem_polygon=polygon;out.problem_vertices={a,b,c};}};
++    auto problem=[&](unsigned list,size_t polygon,uint32_t a,uint32_t b,uint32_t c){
++        if(!out.has_problem){
++            out.has_problem=true;
++            out.problem_list=list;
++            out.problem_polygon=polygon;
++            out.problem_vertices={a,b,c};
++        }
++        on_problem(list,polygon,a,b,c);
++    };
+     auto triangle=[&](unsigned list,size_t polygon,uint32_t a,uint32_t b,uint32_t c){
+         if(a==UINT32_MAX||b==UINT32_MAX||c==UINT32_MAX||a==b||a==c||b==c)return;
+         if(a>=ctx.verts.size()||b>=ctx.verts.size()||c>=ctx.verts.size()){out.malformed=true;return;}
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -3034,12 +3034,13 @@
+     // The diagnostic contains native geometry metadata and no headset imagery.
+     static uint64_t warningGeneration=0;
+     static bool hadWorld=false;
+-    static unsigned reports=0;
++    static unsigned reports=0, detailReports=0;
+     if(!frame.isRTT){
+         if(warningGeneration!=frame.dcCamera.generation){
+             warningGeneration=frame.dcCamera.generation;
+             hadWorld=false;
+             reports=0;
++            detailReports=0;
+         }
+         if(hadWorld&&!result.lens.valid&&reports<16){
+             ++reports;
+@@ -3048,6 +3049,25 @@
+                 (unsigned long long)result.world_triangles,(unsigned long long)result.ui_triangles,
+                 (unsigned long long)result.unknown_triangles,(unsigned long long)result.mixed_triangles,
+                 int(result.malformed),int(result.unsupported_modifiers));
++            // On a gameplay loss, report the remaining rejected triangles from
++            // this same frame. The common render path still walks the mesh once.
++            if(result.unknown_triangles&&result.world_triangles>=256&&detailReports<2){
++                ++detailReports;
++                unsigned shown=0;
++                finalize_decoded_lens(frame,ui,[&](unsigned list,size_t index,u32 a,u32 b,u32 c){
++                    if(shown++>=96)return;
++                    const auto& polygons=list==0?frame.global_param_op:
++                        list==1?frame.global_param_pt:frame.global_param_tr;
++                    const auto& p=polygons[index];
++                    const auto& v0=frame.verts[a];const auto& v1=frame.verts[b];const auto& v2=frame.verts[c];
++                    NOTICE_LOG(RENDERER,"SS_WORLD_DROP_DETAIL seq=%llu list=%u poly=%zu isp=%08x tsp=%08x tcw=%08x pcw=%08x clip=%08x "
++                        "x/y/q/u/v/r/g/b/a=(%.4f,%.4f,%.8f,%.6f,%.6f,%u,%u,%u,%u)(%.4f,%.4f,%.8f,%.6f,%.6f,%u,%u,%u,%u)(%.4f,%.4f,%.8f,%.6f,%.6f,%u,%u,%u,%u)",
++                        (unsigned long long)frame.dcCamera.submit_sequence,list,index,p.isp.full,p.tsp.full,p.tcw.full,p.pcw.full,p.tileclip,
++                        v0.x,v0.y,v0.z,v0.u,v0.v,unsigned(v0.col[0]),unsigned(v0.col[1]),unsigned(v0.col[2]),unsigned(v0.col[3]),
++                        v1.x,v1.y,v1.z,v1.u,v1.v,unsigned(v1.col[0]),unsigned(v1.col[1]),unsigned(v1.col[2]),unsigned(v1.col[3]),
++                        v2.x,v2.y,v2.z,v2.u,v2.v,unsigned(v2.col[0]),unsigned(v2.col[1]),unsigned(v2.col[2]),unsigned(v2.col[3]));
++                });
++            }
+             if(result.has_problem){
+                 const auto& polygons=result.problem_list==0?frame.global_param_op:
+                     result.problem_list==1?frame.global_param_pt:frame.global_param_tr;

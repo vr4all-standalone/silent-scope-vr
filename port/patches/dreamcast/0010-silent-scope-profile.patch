@@ -1,0 +1,31 @@
+diff --git a/core/emulator.cpp b/core/emulator.cpp
+--- a/core/emulator.cpp
++++ b/core/emulator.cpp
+@@ -22,6 +22,7 @@
+ #include "types.h"
+ #include "stdclass.h"
+ #include "cfg/option.h"
++#include "dreamcast/dc_settings.h"
+ #include "hw/aica/aica_if.h"
+ #include "imgread/common.h"
+ #include "hw/naomi/naomi_cart.h"
+@@ -880,6 +881,19 @@ void loadGameSpecificSettings()
+ 	// Reload per-game settings
+ 	config::Settings::instance().load(true);
+ 
++	// The verified console title uses a native Maple mouse. Keep this override
++	// local to its VR profile, after per-game options load and before device
++	// creation. Existing desktop diagnostics and other titles stay unchanged.
++	if (settings.content.gameId == "T9507N" && config::VrXr)
++	{
++		silent_scope::dc_settings::sanitize_loaded();
++		config::NativeDepthInterpolation.override(true);
++		config::ThreadedRendering.override(true);
++		config::MapleMainDevices[0].override(MDT_Mouse);
++		for (unsigned port = 1; port < config::MapleMainDevices.size(); ++port)
++			config::MapleMainDevices[port].override(MDT_None);
++	}
++
+ 	if (config::GGPOEnable || settings.raHardcoreMode)
+ 		config::Sh4Clock.override(200);
+ 	if (config::GGPOEnable)

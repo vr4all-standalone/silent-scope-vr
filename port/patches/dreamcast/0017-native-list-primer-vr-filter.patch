@@ -1,0 +1,98 @@
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -10,6 +10,7 @@
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_scope_hud.h"
+ #include "dreamcast/dc_hud.h"
++#include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/dc_settings.h"
+ #endif
+ #ifdef LIBRETRO
+@@ -294,6 +295,24 @@
+ }
+ 
+ #if !defined(GLES2)
++template<u32 Type, bool SortingEnabled>
++static bool drawSilentScopeNativePrimers(const PolyParam* params, u32 first, u32 count,
++    bool triangles, std::size_t polygon)
++{
++    if (Type != ListType_Opaque && Type != ListType_Punch_Through && Type != ListType_Translucent)
++        return false;
++    const unsigned list = Type == ListType_Opaque ? 0u : Type == ListType_Punch_Through ? 1u : 2u;
++    return silent_scope::dc_native_primer::draw_filtered(settings.content.gameId, *gl.rendContext,
++        list, polygon, first, count, triangles, vr::xr::currentEye() != nullptr && bool(config::VrReproject),
++        [&](const silent_scope::dc_native_primer::Range& range) {
++            SetGPState<Type, SortingEnabled>(params, range.flip ? 1u : 0u);
++            glDrawElements(triangles ? GL_TRIANGLES : GL_TRIANGLE_STRIP, range.count, gl.index_type,
++                (GLvoid*)(gl.get_index_size() * range.first));
++        });
++}
++#endif
++
++#if !defined(GLES2)
+ static silent_scope::dc_hud::Gate silentScopeHudGate(bool translucent)
+ {
+     return silent_scope::dc_hud::frame_gate(settings.content.gameId, *gl.rendContext,
+@@ -367,6 +386,9 @@
+ 			// depthFunc = never
+ 			continue;
+ #if !defined(GLES2)
++        if (drawSilentScopeNativePrimers<Type,SortingEnabled>(params, params->first, params->count,
++                false, std::size_t(params - gply.data())))
++            continue;
+         if (drawSilentScopeHud<Type,SortingEnabled>(params, params->first, params->count, false, std::size_t(params - gply.data())))
+             continue;
+ #endif
+@@ -394,6 +416,10 @@
+             continue;
+ #endif
+ #if !defined(GLES2)
++        if (drawSilentScopeNativePrimers<ListType_Translucent,true>(params,
++                gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count,
++                true, gl.rendContext->sortedTriangles[p].polyIndex))
++            continue;
+         if (drawSilentScopeHud<ListType_Translucent,true>(params,
+                 gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count, true, gl.rendContext->sortedTriangles[p].polyIndex))
+             continue;
+@@ -432,6 +458,20 @@
+ 				// FIXME no clipping in modvol shader
+ 				//SetTileClip(gp->tileclip,true);
+ 
++#if !defined(GLES2)
++                if (silent_scope::dc_native_primer::draw_filtered(settings.content.gameId, *gl.rendContext,
++                        2u, gl.rendContext->sortedTriangles[p].polyIndex,
++                        gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count,
++                        true, vr::xr::currentEye() != nullptr && bool(config::VrReproject),
++                        [&](const silent_scope::dc_native_primer::Range& range) {
++                            silentScopeHudUniforms(silent_scope::dc_hud::Layer::World, 0,
++                                gl.modvol_shader.vrOverlay, gl.modvol_shader.vrHudSize, 1.f, ShaderUniforms.vrHudSize);
++                            SetCull(params->isp.CullMode ^ 1);
++                            glDrawElements(GL_TRIANGLES, range.count, gl.index_type,
++                                (GLvoid*)(gl.get_index_size() * range.first));
++                        }))
++                    continue;
++#endif
+ #if !defined(GLES2)
+                 // The depth-only pass must follow the exact same per-triangle plane.
+                 namespace hud = silent_scope::dc_hud;
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -19,6 +19,7 @@
+ #include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
++#include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/rifle_renderer.h"
+ #include "dreamcast/rifle_support.h"
+ #include <memory>
+@@ -1157,6 +1158,10 @@
+ 		if (a == RestartIndex || b == RestartIndex || c == RestartIndex
+ 				|| a >= kind.size() || b >= kind.size() || c >= kind.size())
+ 			return;
++        if (poly != nullptr && bool(config::VrReproject) &&
++                silent_scope::dc_native_primer::proven_triangle(settings.content.gameId, ctx,
++                    listName[0] == 'O' ? 0u : listName[0] == 'P' ? 1u : 2u, polyIndex, a, b, c))
++            return;
+         if (poly != nullptr && listName[0] == 'T' &&
+                 silent_scope::dc_hud::classify(nativeHudGate, *poly, ctx.verts[a], ctx.verts[b], ctx.verts[c])
+                     != silent_scope::dc_hud::Layer::World)

@@ -1,0 +1,42 @@
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -31,7 +31,7 @@
+ constexpr int Left = 0, Right = 1;
+ 
+ const char *const Labels[Rows] { "Resume", "Recenter", "Gun", "Gun angle", "Reload", "Two players", "Laser", "Reticle", "Reticle min size", "Reticle max size", "Reticle shrink distance", "Haptics",
+-		"World size", "Panel distance", "HUD size", "Wider view", "Game zoom", "How to play", "Open Service Menu", "Reset to defaults", "Quit", "Hand", "FPS counter" };
++		"World size", "Panel distance", "HUD size", "Wider view", "Game zoom", "How to play", "Open Service Menu", "Reset to defaults", "Quit", "Hand", "FPS counter", "Aim smoothing" };
+ const char *const HapticsNames[4] { "Off", "Light", "Medium", "Strong" };
+ // vr.Haptics' words, saved by the Haptics row (hapticsLevel() reads them, and 1.2's numbers)
+ const char *const HapticsWords[4] { "off", "light", "medium", "strong" };
+@@ -49,9 +49,9 @@
+     static const std::vector<int> original { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+         GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit };
+-    static const std::vector<int> silentScope { Resume, Recenter, Gun, GunAngle, Hand, Reload, TwoPlayers, Laser, Reticle,
++    static const std::vector<int> silentScope { Resume, Recenter, Gun, GunAngle, AimSmoothing, Hand, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+-        HowToPlay, ServiceMenu, FpsCounter, ResetDefaults, Quit };
++        HowToPlay, FpsCounter, ResetDefaults, Quit };
+     return dc::is_silent_scope() ? silentScope : original;
+ }
+ bool ssSetting(int row, dc::Setting& setting)
+@@ -70,6 +70,7 @@
+     case HudSize: setting=dc::Setting::HudSize; return true;
+     case WiderView: setting=dc::Setting::WiderView; return true;
+     case FpsCounter: setting=dc::Setting::FpsCounter; return true;
++    case AimSmoothing: setting=dc::Setting::AimSmoothing; return true;
+     default: return false;
+     }
+ }
+--- a/core/rend/vr/xr_menu.h
++++ b/core/rend/vr/xr_menu.h
+@@ -17,7 +17,7 @@
+ namespace vr::xr::menu
+ {
+ 
+-enum Row { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle, ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView, GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit, Hand, FpsCounter, Rows };
++enum Row { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle, ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView, GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit, Hand, FpsCounter, AimSmoothing, Rows };
+ 
+ // What the controllers did in a headset frame. The buttons are edges (just pressed); the rays,
+ // one per hand (0 left, 1 right), are in the game camera's room space, with their trigger's click.

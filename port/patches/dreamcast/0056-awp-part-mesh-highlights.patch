@@ -1,0 +1,46 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2562,14 +2562,20 @@
+     const auto magazine=ssSimulation.magazine();
+     const bool inHand=ssSimulationSelected&&ssMagazineTracked&&
+         (magazine==ss::RifleSimulation::Magazine::EmptyInHand||magazine==ss::RifleSimulation::Magazine::FreshInHand);
+-    const bool showMagazine=!ssSimulationSelected||inHand||magazine==ss::RifleSimulation::Magazine::Seated;
++    using Hold=ss::RifleCarry::Hold;
++    using Magazine=ss::RifleSimulation::Magazine;
++    const auto hold=ssCarry.hold();
++    const bool guide=ssSimulationSelected&&hold!=Hold::Chest&&!inHand&&!ssSimulation.holding_bolt();
++    const bool highlightMagazine=guide&&magazine==Magazine::Seated&&ssSimulation.rounds()==0;
++    const bool highlightBolt=guide&&magazine==Magazine::Seated&&ssSimulation.rounds()>0&&!ssSimulation.can_fire();
++    const bool showMagazine=!ssSimulationSelected||inHand||magazine==Magazine::Seated;
+     const float modelScale=ssSimulationSelected?SsAwpScale:1.f;
+     const auto scaledModel=glm::scale(rifleModel,glm::vec3(modelScale));
+     ssRifle->draw_rifle_texture(vp,scaledModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+         ss::dc_settings::scope_image_offset()/modelScale,ss::dc_settings::scope_image_scale(),
+-        ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift());
+-    if(ssSimulationSelected&&magazine==ss::RifleSimulation::Magazine::Missing)
+-        ssRifle->draw_magazine(vp,glm::translate(glm::scale(ssSpareMagazineAnchor,glm::vec3(SsAwpScale)),-ss::RifleSimulation::MagazineBase));
++        ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift(),highlightBolt,highlightMagazine);
++    if(ssSimulationSelected&&magazine==Magazine::Missing)
++        ssRifle->draw_magazine(vp,glm::translate(glm::scale(ssSpareMagazineAnchor,glm::vec3(SsAwpScale)),-ss::RifleSimulation::MagazineBase),guide);
+     if(ssSimulationSelected&&ssSimulation.feeding()){
+         const float rearward=std::min(ssSimulation.bolt()/.065f,1.f);
+         const glm::vec3 feed{.018f*rearward,.071f+.011f*rearward,-.055f+ssSimulation.bolt()};
+@@ -2586,17 +2592,7 @@
+     if(ssSimulationSelected){
+         for(int h:{Left,Right})
+             if(ssHandBoxVisible[h])ssRifle->draw_support_box(vp,ssHandBoxPose[h]);
+-        using Hold=ss::RifleCarry::Hold;
+-        using Magazine=ss::RifleSimulation::Magazine;
+-        const auto hold=ssCarry.hold();
+-        if(hold==Hold::Chest||inHand||ssSimulation.holding_bolt())return;
+-        if(magazine==Magazine::Missing)
+-            ssRifle->draw_support_box(vp,ssSpareMagazineAnchor,true);
+-        else if(ssSimulation.rounds()==0)
+-            ssRifle->draw_support_box(vp,glm::translate(scaledModel,ss::RifleSimulation::MagazineBase),true);
+-        else if(!ssSimulation.can_fire())
+-            ssRifle->draw_support_box(vp,glm::translate(scaledModel,ssSimulation.bolt_handle()),true);
+-        else if(hold==Hold::Front)
++        if(guide&&hold==Hold::Front&&ssSimulation.can_fire())
+             ssRifle->draw_support_box(vp,rifleModel,true);
+     }
+ }

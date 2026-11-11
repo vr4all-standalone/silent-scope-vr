@@ -1,0 +1,58 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -152,7 +152,8 @@
+ int ssSimulationAmmoBefore=-1;
+ bool ssSimulationShotBraced=false;
+ double ssSimulationShotAt=-1;
+-glm::mat4 ssMagazineInHand(1.f);
++glm::mat4 ssMagazineInHand(1.f), ssSupportGlove(1.f), ssSpareMagazineAnchor(1.f);
++bool ssSupportGloveLeft=true;
+ bool ssMagazineTracked=false;
+ bool ssScopeZoomArmed{};
+ std::array<ss::GripLatch,2> ssGripLatch;
+@@ -2384,12 +2385,16 @@
+             }else if(target.host_seconds-ssSimulationShotAt>.40)ssSimulationShotAt=-1;
+         }
+         const auto& hand=hands[1-target.hand];
++        ssSupportGloveLeft=target.hand==Right;
++        const auto head=headPose();
++        const auto belt=glm::translate(glm::mat4(1.f),glm::vec3(head[3]))*
++            glm::mat4_cast(yawOnly(glm::quat_cast(glm::mat3(head))));
++        ssSpareMagazineAnchor=glm::translate(belt,glm::vec3(ssSupportGloveLeft?-.24f:.24f,-.43f,-.32f));
+         ssMagazineTracked=native3d&&smoothed.valid&&hand.tracked;
+         if(ssMagazineTracked){
+             const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3]);
+-            const auto headRelative=glm::vec3(glm::inverse(headPose())*hand.model[3]);
+-            const bool nearBelt=headRelative.y<-.27f&&headRelative.y>-.88f&&
+-                std::abs(headRelative.x)<.48f&&std::abs(headRelative.z)<.45f;
++            ssSupportGlove=hand.model;
++            const bool nearBelt=glm::distance(glm::vec3(hand.model[3]),glm::vec3(ssSpareMagazineAnchor[3]))<=.14f;
+             const auto previousEjections=ssSimulation.ejections();
+             ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,1-target.hand)),true,nearBelt);
+             if(ssSimulation.ejections()!=previousEjections){
+@@ -2510,6 +2515,10 @@
+     ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+         ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale(),
+         ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift());
++    if(ssSimulationSelected&&magazine==ss::RifleSimulation::Magazine::Missing)
++        ssRifle->draw_magazine(vp,glm::translate(ssSpareMagazineAnchor,-ss::RifleSimulation::MagazineBase));
++    if(ssSimulationSelected&&ssMagazineTracked)
++        ssRifle->draw_support_glove(vp,ssSupportGlove,ssSupportGloveLeft);
+     if(ssSimulationSelected&&ssSimulation.feeding()){
+         const float rearward=std::min(ssSimulation.bolt()/.065f,1.f);
+         const glm::vec3 feed{.018f*rearward,.071f+.011f*rearward,-.055f+ssSimulation.bolt()};
+@@ -2548,7 +2557,13 @@
+     if(ssSimulationSelected&&ssRifleValid&&!menuOpen){
+         using Magazine=ss::RifleSimulation::Magazine;
+         const auto magazine=ssSimulation.magazine();
+-        const char* instruction=magazine==Magazine::Missing?"Trigger at hip for fresh magazine":
++        if(magazine==Magazine::Missing){
++            int w=0,h=0;
++            const auto marker=textTexture("SPARE MAGAZINE",32,theme::Accent,w,h);
++            const auto labelPose=glm::translate(ssSpareMagazineAnchor,glm::vec3(0,.087f,0));
++            if(marker&&h>0)drawTexture(vp,labelPose,marker,.017f*w/h,.017f);
++        }
++        const char* instruction=magazine==Magazine::Missing?"Offhand trigger: grab the spare magazine":
+             magazine==Magazine::EmptyInHand?"Release empty magazine":
+             magazine==Magazine::FreshInHand?"Seat magazine below receiver":
+             ssSimulation.rounds()==0?"Grab empty magazine with offhand trigger":

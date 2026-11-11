@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/mamedev/mame.git",
+  "tag": "mame0289",
+  "commit": "f34f02505e32c1993c6a782b6814232cbfc74e36",
+  "subtarget": "silentscope",
+  "sources": "src/mame/konami/hornet.cpp",
+  "game": "sscope"
+}

@@ -1,0 +1,240 @@
+--- a/core/rend/vr/xr_menu.h
++++ b/core/rend/vr/xr_menu.h
+@@ -25,7 +25,9 @@
+ {
+ 	// repeat: left or right again from a stick held on the same push (0.4 s, then every 0.1 s); only
+ 	// Gun angle, World size and Panel distance step on it (the Gun row loads a model each step)
+-	bool toggle, back, select, up, down, left, right, repeat;
++	bool toggle{}, back{}, select{}, up{}, down{}, left{}, right{}, repeat{};
++    bool perHand{};
++    struct Hand {bool select{},back{},up{},down{},left{},right{},repeat{};} hand[2];
+ 	struct Ray
+ 	{
+ 		bool valid, click;
+@@ -50,6 +52,7 @@
+ // Where a hand's ray meets the panel, as of the last update. False: it doesn't (or no menu).
+ bool pointer(int hand, glm::vec3& at);
+ int pointerOwner();
++void drawContact(const glm::mat4& viewProj);
+ // The panel, into the bound eye framebuffer; viewProj: room space -> the eye's clip space.
+ void draw(const glm::mat4& viewProj);
+ 
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -30,7 +30,7 @@
+ constexpr float Distance = 1.2f, BelowEyes = 0.1f;
+ constexpr int Left = 0, Right = 1;
+ 
+-const char *const Labels[Rows] { "Resume", "Recenter", "Gun", "Gun angle", "Reload", "Two players", "Laser", "Reticle", "Reticle min size", "Reticle max size", "Reticle shrink distance", "Haptics",
++const char *const Labels[Rows] { "Resume", "Recenter", "Gun model", "Gun angle", "Reload", "Two players", "Laser", "Crosshair", "Crosshair min size", "Crosshair max size", "Crosshair shrink distance", "Haptics",
+ 		"World size", "Panel distance", "HUD size", "Wider view", "Game zoom", "How to play", "Open Service Menu", "Reset to defaults", "Quit", "Hand", "FPS counter", "Aim smoothing", "Scope stability", "Scope zoom", "Advanced", "Advanced", "Cancel", "Confirm" };
+ const char *const HapticsNames[4] { "Off", "Light", "Medium", "Strong" };
+ // vr.Haptics' words, saved by the Haptics row (hapticsLevel() reads them, and 1.2's numbers)
+@@ -508,7 +508,7 @@
+ enum class SsPage { Gun, World, System, Game, GunAdvanced, WorldAdvanced };
+ SsPage ssPage=SsPage::Gun;
+ int ssOwner=Right, ssConfirmation=-1;
+-SettingsHit ssFocus;
++SettingsHit ssFocus,ssHovered;
+ 
+ std::vector<int> ssRows()
+ {
+@@ -572,30 +572,20 @@
+     else close();
+ }
+ 
+-void ssUpdate(const Input& input)
+-{
+-    if(input.toggle){close();return;}
+-    if(input.back){ssBack();return;}
+-    pointing[0]=pointing[1]=false;
+-    const int other=1-ssOwner;
+-    if(!fresh&&input.ray[other].valid&&input.ray[other].click&&!input.ray[ssOwner].click){
+-        ssOwner=other;
+-        ssFocus={};
+-        return;
+-    }
++bool sameHit(const SettingsHit& a,const SettingsHit& b)
++{
++    return a.kind==b.kind&&a.index==b.index;
++}
++
++void ssActivate(SettingsHit hit)
++{
++    ssFocus=hit;
+     const auto panel=ssPanel();
+-    const auto& ray=input.ray[ssOwner];
+-    glm::vec2 uv;
+-    pointing[ssOwner]=ray.valid&&settingsPanelHit(model,panel,ray.origin,ray.dir,&pointAt[ssOwner],&uv);
+-    ssFocus=pointing[ssOwner]?settingsAt(panel,uv):SettingsHit{};
+-    const bool wasFresh=fresh;
+-    fresh=false;
+-    if(wasFresh||!ray.click)return;
+     using Kind=SettingsHit::Kind;
+-    switch(ssFocus.kind){
++    switch(hit.kind){
+     case Kind::Close: close();return;
+     case Kind::Back: ssBack();return;
+-    case Kind::Tab: ssPage=SsPage(ssFocus.index);ssFocus={};return;
++    case Kind::Tab: ssPage=SsPage(hit.index);ssFocus={};ssHovered={};return;
+     case Kind::None: return;
+     case Kind::Row: break;
+     }
+@@ -623,6 +613,58 @@
+     }else choose(action,ssOwner);
+ }
+ 
++void ssUpdate(const Input& input)
++{
++    if(input.toggle){close();return;}
++    pointing[0]=pointing[1]=false;
++    const int other=1-ssOwner;
++    const bool transfer=!fresh&&input.ray[other].valid&&input.ray[other].click&&!input.ray[ssOwner].click;
++    if(transfer){ssOwner=other;ssHovered={};}
++    const auto panel=ssPanel();
++    const auto& ray=input.ray[ssOwner];
++    glm::vec2 uv;
++    pointing[ssOwner]=ray.valid&&settingsPanelHit(model,panel,ray.origin,ray.dir,&pointAt[ssOwner],&uv);
++    const auto hit=pointing[ssOwner]?settingsAt(panel,uv):SettingsHit{};
++    if(!fresh&&!gunsTurned&&!transfer&&hit.kind!=SettingsHit::Kind::None&&!sameHit(hit,ssHovered))ssFocus=hit;
++    ssHovered=hit;
++    const bool suppress=fresh||gunsTurned||transfer;
++    fresh=gunsTurned=false;
++    if(transfer||suppress)return;
++    const auto controls=input.perHand?input.hand[ssOwner]:
++        Input::Hand{input.select,input.back,input.up,input.down,input.left,input.right,input.repeat};
++    if(controls.back){ssBack();return;}
++    if(!input.perHand&&input.back){ssBack();return;}
++    using Kind=SettingsHit::Kind;
++    if(controls.up||controls.down){
++        std::vector<SettingsHit> navigation;
++        if(ssConfirmation<0){
++            for(int tab=0;tab<4;++tab)navigation.push_back({Kind::Tab,tab});
++            if(panel.back)navigation.push_back({Kind::Back});
++        }
++        for(int row=0;row<int(panel.rows.size());++row)navigation.push_back({Kind::Row,row});
++        navigation.push_back({Kind::Close});
++        int at=-1;
++        for(int n=0;n<int(navigation.size());++n)if(sameHit(ssFocus,navigation[n]))at=n;
++        at=(at+(controls.up?-1:1)+int(navigation.size()))%int(navigation.size());
++        ssFocus=navigation[at];
++    }
++    if(ray.click&&hit.kind!=Kind::None){ssActivate(hit);return;}
++    if(controls.left||controls.right){
++        const int direction=controls.left?-1:1;
++        if(ssFocus.kind==Kind::Tab&&!controls.repeat){
++            ssPage=SsPage((ssFocus.index+direction+4)%4);
++            ssFocus={Kind::Tab,int(ssPage)};ssHovered={};
++        }else if(ssFocus.kind==Kind::Row){
++            const auto rows=ssRows();
++            if(ssFocus.index>=0&&ssFocus.index<int(rows.size())&&!panel.rows[ssFocus.index].dim){
++                const int row=rows[ssFocus.index];
++                if((stepper(row)||onOff(row))&&(!controls.repeat||repeats(row)))change(row,direction,ssOwner);
++            }
++        }
++    }
++    if(controls.select){auto chosen=ssFocus;chosen.choice=-1;chosen.direction=0;ssActivate(chosen);}
++}
++
+ }	// namespace
+ 
+ bool isOpen()
+@@ -646,7 +688,7 @@
+     currentPage=0;
+     if(dc::is_silent_scope()){
+         dc::sanitize_loaded();
+-        ssPage=SsPage::Gun;ssOwner=dc::primary_hand();ssFocus={};ssConfirmation=-1;
++        ssPage=SsPage::Gun;ssOwner=dc::primary_hand();ssFocus={};ssHovered={};ssConfirmation=-1;
+     }
+ 	place(head);
+ 	selected = Resume;
+@@ -775,19 +817,22 @@
+ 	return true;
+ }
+ 
+-int pointerOwner(){return dc::is_silent_scope()?ssOwner:-1;}
++int pointerOwner(){return dc::is_silent_scope()&&isOpen()?ssOwner:-1;}
+ 
+ void draw(const glm::mat4& viewProj)
+ {
+     if(!isOpen())return;
+     if(dc::is_silent_scope()){
+         drawSettingsPanel(viewProj,model,ssPanel());
+-        if(pointing[ssOwner]){
+-            auto contact=model;
+-            contact[3]=glm::vec4(pointAt[ssOwner]+glm::vec3(model[2])*.003f,1.f);
+-            drawPanelContact(viewProj,contact);
+-        }
+     }else drawRowsPanel(viewProj,model,panel());
+ }
+ 
+-}
++void drawContact(const glm::mat4& viewProj)
++{
++    if(!dc::is_silent_scope()||!isOpen()||!pointing[ssOwner])return;
++    auto contact=model;
++    contact[3]=glm::vec4(pointAt[ssOwner]+glm::vec3(model[2])*.004f,1.f);
++    drawPanelContact(viewProj,contact);
++}
++
++}
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2131,11 +2131,48 @@
+ 			ray.dir = relativeRotation(locations[hand].pose.orientation) * glm::vec3(0.f, 0.f, -1.f);
+ 		}
+ 	}
++    if(ss::dc_settings::is_silent_scope()){
++        input.perHand=true;
++        static bool selectWas[2]{},backWas[2]{},armed[2]{};
++        static int directions[2]{};
++        static XrTime repeatTimes[2]{};
++        for(int hand:{Left,Right}){
++            XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
++            info.action=stickAction;info.subactionPath=handPaths[hand];
++            XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};
++            const bool stickValid=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&info,&state))&&state.isActive;
++            const glm::vec2 axis=stickValid?glm::vec2(state.currentState.x,state.currentState.y):glm::vec2(0);
++            const bool select=boolAction(startAction,hand),back=boolAction(skipAction,hand);
++            if(menuFresh||!tracked[hand]||!focused)armed[hand]=false;
++            if(tracked[hand]&&!select&&!back&&floatAction(triggerAction,hand)<=.35f&&glm::length(axis)<.4f)
++                armed[hand]=true;
++            auto& controls=input.hand[hand];
++            controls.select=armed[hand]&&select&&!selectWas[hand];
++            controls.back=armed[hand]&&back&&!backWas[hand];
++            int direction=0;
++            if(armed[hand]){
++                if(directions[hand]&&glm::length(axis)>=.4f)direction=directions[hand];
++                else if(std::abs(axis.y)>=std::abs(axis.x))direction=axis.y>.6f?1:axis.y<-.6f?2:0;
++                else direction=axis.x>.6f?4:axis.x<-.6f?3:0;
++            }
++            if(direction!=directions[hand]){
++                controls.up=direction==1;controls.down=direction==2;
++                controls.left=direction==3;controls.right=direction==4;
++                repeatTimes[hand]=time+400000000LL;
++            }else if((direction==3||direction==4)&&time>=repeatTimes[hand]){
++                controls.left=direction==3;controls.right=direction==4;controls.repeat=true;
++                repeatTimes[hand]=time+100000000LL;
++            }
++            if(!armed[hand])input.ray[hand].click=false;
++            directions[hand]=direction;selectWas[hand]=select;backWas[hand]=back;
++        }
++    }
+ 	if (menuFresh)
+ 	{
+ 		menuFresh = false;
+ 		input.toggle = input.back = input.select = input.up = input.down = input.left = input.right = input.repeat = false;
+ 		input.ray[Left].click = input.ray[Right].click = false;
++        input.hand[Left]={};input.hand[Right]={};
+ 	}
+ 	// B or A pressed in the menu goes no further than the menu: not to the game once it goes on
+ 	if (input.back)
+@@ -4041,7 +4078,7 @@
+ 					if (controllerShown[hand] && holds(hand) == Holds::Controller)
+ 						labels::draw(viewProj, hand, controllerGrip[hand], controllerAim[hand], profiles[hand].c_str());
+ 		}
+-		if(silentScope&&focused)drawSilentScopeInfo(eyeProjection(views[i].fov)*view);
++		if(silentScope&&focused){drawSilentScopeInfo(eyeProjection(views[i].fov)*view);menu::drawContact(eyeProjection(views[i].fov)*view);}
+         if(!silentScope&&focused&&!darkRoom&&!serviceMenuActive()&&zoomSession.notice(zoomSeconds())){
+ 			int w=0,h=0;
+ 			const auto tex=textTexture(gameZoomOn()?"Zoom enabled":"Zoom disabled",40,theme::Accent,w,h);

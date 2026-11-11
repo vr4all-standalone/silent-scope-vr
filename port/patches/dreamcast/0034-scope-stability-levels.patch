@@ -1,0 +1,11 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2266,7 +2266,7 @@
+             const auto eye = glm::vec3(local * glm::vec4(relativePosition(view.pose.position), 1)) - ss::dc_rifle::ocular;
+             aligned |= ss::scope_visibility({eye.x, eye.y, eye.z}, {}).visible;
+         }
+-        ssRifleModel = ssScopeStability.update(smoothed.model, target.host_seconds, aligned, ss::dc_settings::scope_stability());
++        ssRifleModel = ssScopeStability.update(smoothed.model, target.host_seconds, aligned, ss::dc_settings::scope_stability_level());
+     } else {
+         ssScopeStability.reset();
+     }

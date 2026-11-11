@@ -1,0 +1,79 @@
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -18,6 +18,7 @@
+ #if !defined(GLES2)
+ #include "dreamcast/dc_scope_gl.h"
+ #include "dreamcast/dc_scope_composite.h"
++#include "dreamcast/dc_scope_hud.h"
+ #endif
+ 
+ #ifdef TEST_AUTOMATION
+@@ -1474,6 +1475,8 @@
+         // Native/Original draws and nested calls cannot inherit a previous mask.
+         silent_scope::dc_scope::ScopedCompositeDraw scopeComposite(settings.content.gameId,
+             *gl.rendContext, vrEye && bool(config::VrReproject), reinterpret_cast<uintptr_t>(GraphicsContext::Instance()));
++        silent_scope::dc_scope_hud::ScopedDraw scopeFallback(settings.content.gameId,
++            *gl.rendContext, vrEye && bool(config::VrReproject));
+ #endif
+         DrawStrips();
+     }
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -8,6 +8,7 @@
+ #include "naomi2.h"
+ #if !defined(GLES2)
+ #include "dreamcast/dc_scope_composite.h"
++#include "dreamcast/dc_scope_hud.h"
+ #include "dreamcast/dc_hud.h"
+ #include "dreamcast/dc_settings.h"
+ #endif
+@@ -314,7 +315,7 @@
+             value.y = silent_scope::dc_hud::NativeTanY;
+             value.z = plane.depth;
+             value.w = 1.f / gl.rendContext->verts[gl.rendContext->idx[first]].z;
+-            xySize = plane.size * nativeScale; // undo measured native /3 UI, then user's size
++            xySize = silent_scope::dc_hud::render_size(layer, nativeScale, plane); // target-attached UI keeps its native bearing
+         }
+     }
+     if (overlay != -1) glUniform4fv(overlay, 1, &value[0]);
+@@ -322,11 +323,11 @@
+ }
+ 
+ template<u32 Type, bool SortingEnabled>
+-static bool drawSilentScopeHud(const PolyParam* params, u32 first, u32 count, bool triangles)
++static bool drawSilentScopeHud(const PolyParam* params, u32 first, u32 count, bool triangles, std::size_t polygon = SIZE_MAX)
+ {
+     namespace hud = silent_scope::dc_hud;
+     const auto gate = silentScopeHudGate(Type == ListType_Translucent);
+-    return hud::draw_ranges(gate, *gl.rendContext, *params, first, count,
++    return silent_scope::dc_scope_hud::draw_ranges(gate, *gl.rendContext, *params, polygon, first, count,
+         triangles ? hud::Primitive::Triangles : hud::Primitive::Strip, [&](const hud::DrawRange& range) {
+             SetGPState<Type, SortingEnabled>(params, range.flip ? 1u : 0u);
+             if (range.layer != hud::Layer::World)
+@@ -366,7 +367,7 @@
+ 			// depthFunc = never
+ 			continue;
+ #if !defined(GLES2)
+-        if (drawSilentScopeHud<Type,SortingEnabled>(params, params->first, params->count, false))
++        if (drawSilentScopeHud<Type,SortingEnabled>(params, params->first, params->count, false, std::size_t(params - gply.data())))
+             continue;
+ #endif
+ 		SetGPState<Type,SortingEnabled>(params);
+@@ -394,7 +395,7 @@
+ #endif
+ #if !defined(GLES2)
+         if (drawSilentScopeHud<ListType_Translucent,true>(params,
+-                gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count, true))
++                gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count, true, gl.rendContext->sortedTriangles[p].polyIndex))
+             continue;
+ #endif
+ 		SetGPState<ListType_Translucent,true>(params);
+@@ -434,7 +435,7 @@
+ #if !defined(GLES2)
+                 // The depth-only pass must follow the exact same per-triangle plane.
+                 namespace hud = silent_scope::dc_hud;
+-                if (hud::draw_ranges(silentScopeHudGate(true), *gl.rendContext, *params,
++                if (silent_scope::dc_scope_hud::draw_ranges(silentScopeHudGate(true), *gl.rendContext, *params, gl.rendContext->sortedTriangles[p].polyIndex,
+                         gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count,
+                         hud::Primitive::Triangles, [&](const hud::DrawRange& range) {
+                             if (range.layer != hud::Layer::World)

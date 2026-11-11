@@ -1,0 +1,125 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -144,6 +144,7 @@
+ ss::RifleScopeStability ssScopeStability;
+ ss::RifleSteadyAim ssSteadyAim;
+ ss::RifleSimulation ssSimulation;
++constexpr float SsAwpScale=1.10f;
+ glm::mat4 ssEjectionPose(1.f);
+ double ssEjectedAt=-1;
+ ss::GripLatch ssManipulationTrigger;
+@@ -152,8 +153,8 @@
+ int ssSimulationAmmoBefore=-1;
+ bool ssSimulationShotBraced=false;
+ double ssSimulationShotAt=-1;
+-glm::mat4 ssMagazineInHand(1.f), ssSupportGlove(1.f), ssSpareMagazineAnchor(1.f);
+-bool ssSupportGloveLeft=true;
++glm::mat4 ssMagazineInHand(1.f), ssSupportBox(1.f), ssSpareMagazineAnchor(1.f);
++bool ssSupportLeft=true;
+ bool ssMagazineTracked=false;
+ bool ssScopeZoomArmed{};
+ std::array<ss::GripLatch,2> ssGripLatch;
+@@ -2217,8 +2218,8 @@
+         resetSilentScopePose();
+         ss::dc_xr::input_bridge().invalidate();
+     }
+-    const auto ocular=simulation?ss::dc_rifle::awp_ocular:ss::dc_rifle::ocular;
+-    const auto barrel=simulation?ss::dc_rifle::awp_muzzle:ss::dc_rifle::muzzle;
++    const auto ocular=simulation?ss::dc_rifle::awp_ocular*SsAwpScale:ss::dc_rifle::ocular;
++    const auto barrel=simulation?ss::dc_rifle::awp_muzzle*SsAwpScale:ss::dc_rifle::muzzle;
+     const auto* ctx=gles_vr_frame();
+     if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
+         ssSimulation.reset();ssSimulationShotAt=-1;
+@@ -2287,7 +2288,7 @@
+     const bool stickQueried=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&stickInfo,&nativeStick));
+     target.ui_navigation=ssNativeMenuStick.update_sample({stickQueried,nativeStick.isActive!=0,
+         nativeStick.currentState.x,nativeStick.currentState.y},target.focused&&target.tracked&&nativeUi,target.hand);
+-    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,simulation?ss::dc_rifle::awp_foregrip:ss::dc_rifle::foregrip});
++    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,simulation?ss::RifleForegrip{ss::dc_rifle::awp_foregrip.height*SsAwpScale,ss::dc_rifle::awp_foregrip.front*SsAwpScale,ss::dc_rifle::awp_foregrip.rear*SsAwpScale}:ss::dc_rifle::foregrip});
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+         ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
+     if (smoothed.restarted)
+@@ -2377,32 +2378,40 @@
+         if(ssSimulationShotAt>=0){
+             if(nativeFireSequence!=ssSimulationShotSequence&&nativeAmmo>=0&&nativeAmmo<ssSimulationAmmoBefore){
+                 ssSimulation.fired();
++                NOTICE_LOG(INPUT,"SS_AWP shot native=%d->%d simulation=%d",ssSimulationAmmoBefore,nativeAmmo,ssSimulation.rounds());
+                 ssSimulationShotAt=-1;
+                 const bool braced=ssSimulationShotBraced;
+                 if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
+                 haptic(target.hand,braced?.028f:.038f,1.f);
+                 if(braced)haptic(1-target.hand,.024f,.55f);
+-            }else if(target.host_seconds-ssSimulationShotAt>.40)ssSimulationShotAt=-1;
++            }else if(target.host_seconds-ssSimulationShotAt>.40){
++                NOTICE_LOG(INPUT,"SS_AWP timeout native=%d->%d simulation=%d consumed=%d",
++                    ssSimulationAmmoBefore,nativeAmmo,ssSimulation.rounds(),int(nativeFireSequence!=ssSimulationShotSequence));
++                ssSimulationShotAt=-1;
++            }
+         }
+         const auto& hand=hands[1-target.hand];
+-        ssSupportGloveLeft=target.hand==Right;
++        ssSupportLeft=target.hand==Right;
+         const auto head=headPose();
+         const auto belt=glm::translate(glm::mat4(1.f),glm::vec3(head[3]))*
+             glm::mat4_cast(yawOnly(glm::quat_cast(glm::mat3(head))));
+-        ssSpareMagazineAnchor=glm::translate(belt,glm::vec3(ssSupportGloveLeft?-.24f:.24f,-.43f,-.32f));
++        ssSpareMagazineAnchor=glm::translate(belt,glm::vec3(ssSupportLeft?-.24f:.24f,-.43f,-.32f));
+         ssMagazineTracked=native3d&&smoothed.valid&&hand.tracked;
+         if(ssMagazineTracked){
+-            const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3]);
+-            ssSupportGlove=hand.model;
++            const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3])/SsAwpScale;
++            ssSupportBox=hand.model;
+             const bool nearBelt=glm::distance(glm::vec3(hand.model[3]),glm::vec3(ssSpareMagazineAnchor[3]))<=.14f;
+             const auto previousEjections=ssSimulation.ejections();
++            const int roundsBefore=ssSimulation.rounds();
+             ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,1-target.hand)),true,nearBelt);
++            if(ssSimulation.rounds()!=roundsBefore)
++                NOTICE_LOG(INPUT,"SS_AWP reload native=%d simulation=%d",nativeAmmo,ssSimulation.rounds());
+             if(ssSimulation.ejections()!=previousEjections){
+-                ssEjectionPose=glm::translate(ssRifleModel,ss::RifleSimulation::EjectionPort);
++                ssEjectionPose=glm::translate(ssRifleModel,ss::RifleSimulation::EjectionPort*SsAwpScale);
+                 ssEjectedAt=target.host_seconds;
+                 PlaySilentScopeEjection();
+             }
+-            ssMagazineInHand=glm::translate(hand.model,-ss::RifleSimulation::MagazineBase);
++            ssMagazineInHand=glm::translate(glm::scale(hand.model,glm::vec3(SsAwpScale)),-ss::RifleSimulation::MagazineBase);
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
+     }
+     const bool gameplayFire=simulation
+@@ -2512,17 +2521,17 @@
+     const bool inHand=ssSimulationSelected&&ssMagazineTracked&&
+         (magazine==ss::RifleSimulation::Magazine::EmptyInHand||magazine==ss::RifleSimulation::Magazine::FreshInHand);
+     const bool showMagazine=!ssSimulationSelected||inHand||magazine==ss::RifleSimulation::Magazine::Seated;
+-    ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+-        ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale(),
++    const float modelScale=ssSimulationSelected?SsAwpScale:1.f;
++    const auto scaledModel=glm::scale(rifleModel,glm::vec3(modelScale));
++    ssRifle->draw_rifle_texture(vp,scaledModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
++        ss::dc_settings::scope_image_offset()/modelScale,ss::dc_settings::scope_image_scale(),
+         ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift());
+     if(ssSimulationSelected&&magazine==ss::RifleSimulation::Magazine::Missing)
+-        ssRifle->draw_magazine(vp,glm::translate(ssSpareMagazineAnchor,-ss::RifleSimulation::MagazineBase));
+-    if(ssSimulationSelected&&ssMagazineTracked)
+-        ssRifle->draw_support_glove(vp,ssSupportGlove,ssSupportGloveLeft);
++        ssRifle->draw_magazine(vp,glm::translate(glm::scale(ssSpareMagazineAnchor,glm::vec3(SsAwpScale)),-ss::RifleSimulation::MagazineBase));
+     if(ssSimulationSelected&&ssSimulation.feeding()){
+         const float rearward=std::min(ssSimulation.bolt()/.065f,1.f);
+         const glm::vec3 feed{.018f*rearward,.071f+.011f*rearward,-.055f+ssSimulation.bolt()};
+-        ssRifle->draw_cartridge(vp,glm::translate(rifleModel,feed),false);
++        ssRifle->draw_cartridge(vp,glm::translate(scaledModel,feed),false);
+     }
+     const float age=float(ss::dc_scope::monotonic_seconds()-ssEjectedAt);
+     if(ssSimulationSelected&&ssEjectedAt>=0&&age>=0&&age<.65f){
+@@ -2530,8 +2539,10 @@
+         auto casing=ssEjectionPose;
+         casing[3]+=glm::vec4(launch*age+glm::vec3(0,-4.9f*age*age,0),0);
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+-        ssRifle->draw_cartridge(vp,casing,true);
++        ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(SsAwpScale)),true);
+     }
++    if(ssSimulationSelected&&ssMagazineTracked&&!ssSupported&&!inHand&&!ssSimulation.holding_bolt())
++        ssRifle->draw_support_box(vp,ssSupportBox);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

@@ -1,0 +1,59 @@
+--- a/core/dreamcast/dc_hud.h
++++ b/core/dreamcast/dc_hud.h
+@@ -99,28 +99,52 @@
+     default: return digit;
+     }
+ }
++inline bool stadium_caption_glyph(float x,float y,int glyph){
++    constexpr std::string_view name="Cobra";
++    if(y!=320.f||x<280.f||x>320.f)return false;
++    const float column=(x-280.f)/10.f;
++    return column==std::floor(column)&&glyph==name[std::size_t(column)];
++}
++inline bool stadium_dossier_glyph(float x,float y,int glyph){
++    constexpr std::string_view rows[]{
++        "COBRA THE IRON MAN ",
++        "WEAPON-SUBMACHINE GUN ",
++        "HOSTAGE-THE PRESIDENT'S DAUGHTER ",
++    };
++    if((y!=90.f&&y!=110.f&&y!=130.f)||x<180.f||x>500.f)return false;
++    const float column=(x-180.f)/10.f;
++    if(column!=std::floor(column))return false;
++    const auto text=rows[std::size_t((y-90.f)/20.f)];
++    const auto index=std::size_t(column);
++    // The native typewriter draws its cursor in the next character cell.
++    return glyph==127?index<=text.size():index<text.size()&&glyph==text[index];
++}
+ template<class Polygon,class Vertex> Decision classify_detailed(const Gate& g,const Polygon& p,const Vertex& a,const Vertex& b,const Vertex& c){
+     if(!enabled(g)||p.isp.full!=0xc8800000||p.tileclip!=0x00100200)return {};
+     // These native 10x20 font cells have no world lens owner.
+     if(p.tcw.full==0x500c0000&&p.tsp.full==0x9491a4ed&&p.pcw.full==0x828c000a){
+         const float x=std::min({a.x,b.x,c.x}),y=std::min({a.y,b.y,c.y});
+         const float u=std::min({a.u,b.u,c.u}),v=std::min({a.v,b.v,c.v});
++        const bool atlas_cell=u>=0&&u<=.9375f&&v>=0&&v<=.9375f&&u*16==std::floor(u*16)&&v*16==std::floor(v*16);
++        const int glyph=atlas_cell?32+int(u*16)+16*int(v*16):0;
+         // Indoor emits extra score digits at the end of the second HUD row.
+         // Accept only digit atlas cells in the two rightmost native slots.
+         const bool indoor_digit=(x==620.f||x==630.f)&&y==50.f&&v==.0625f&&u<=9.f/16.f;
+         const bool ranking=range_ranking_glyph(x,y,u,v);
+-        const uint8_t tint=(indoor_digit||ranking)&&a.col[1]==255?255:0;
++        const bool caption=stadium_caption_glyph(x,y,glyph);
++        const bool dossier=a.col[0]==0&&stadium_dossier_glyph(x,y,glyph);
++        const bool white=(indoor_digit||ranking||caption)&&a.col[1]==255;
++        const uint8_t red=dossier?0:255,green=dossier||white?255:0,blue=white?255:0,alpha=dossier?191:255;
+         unsigned corners=0;
+         for(const auto* vertex:{&a,&b,&c}){
+             const bool right=vertex->x==x+10,bottom=vertex->y==y+20;
+             if((!right&&vertex->x!=x)||(!bottom&&vertex->y!=y)||
+                vertex->u!=u+(right?.0625f:0.f)||vertex->v!=v+(bottom?.0625f:0.f)||
+                std::abs(vertex->z-.729927003384f)>2e-7f||!std::isfinite(vertex->z)||
+-               vertex->col[0]!=255||vertex->col[1]!=tint||vertex->col[2]!=tint||vertex->col[3]!=255)break;
++               vertex->col[0]!=red||vertex->col[1]!=green||vertex->col[2]!=blue||vertex->col[3]!=alpha)break;
+             corners|=1u<<((right?1:0)+(bottom?2:0));
+         }
+-        if(x>=0&&x<=630&&y>=0&&y<=460&&u>=0&&u<=.9375f&&v>=0&&v<=.9375f&&
+-           u*16==std::floor(u*16)&&v*16==std::floor(v*16)&&(corners==7||corners==14))
++        if(x>=0&&x<=630&&y>=0&&y<=460&&atlas_cell&&(corners==7||corners==14))
+             return {Layer::Font,1};
+     }
+     struct Signature {Layer layer;uint32_t tcw,tsp,pcw;float q,x0,y0,x1,y1;uint8_t r,g,b,a;};

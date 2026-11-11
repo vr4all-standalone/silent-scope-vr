@@ -1,0 +1,6 @@
+private/
+build/
+__pycache__/
+*.pyc
+engine/
+artifacts/

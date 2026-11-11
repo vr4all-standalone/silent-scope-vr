@@ -1,0 +1,125 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -179,7 +179,7 @@
+ glm::mat4 ssRifleModel(1.f);
+ ss::RifleRecoil ssRifleRecoil;
+ bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{},ssNativeUiVisible{};
+-bool ssMenuWas{},ssPrimaryMenuArmed{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
++bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
+ uint64_t ssNativeGeneration{};
+ XrTime ssSecondarySince{};
+ void resetSilentScopePose(){
+@@ -2237,27 +2237,33 @@
+     ss::dc_xr::Target target;target.hand=ss::dc_settings::primary_hand();
+     target.focused=focused;target.menu=menuOpen;target.host_seconds=ss::dc_scope::monotonic_seconds();
+     auto release=[&]{resetSilentScopePose();ssFireWas=ssSubmittedFireWas=false;ss::dc_xr::input_bridge().submit(target);};
+-    if(!focused){ssPrimaryMenuArmed=ssSecondaryArmed=false;ssSecondarySince=0;release();return;}
++    if(!focused){ssSecondaryArmed=false;ssSecondarySince=0;release();return;}
+     const XrActiveActionSet active{actionSet,XR_NULL_PATH};
+     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;
+-    if(!XR_SUCCEEDED(XR(xrSyncActions)(session,&sync))){ssPrimaryMenuArmed=false;release();return;}
++    if(!XR_SUCCEEDED(XR(xrSyncActions)(session,&sync))){release();return;}
+     const bool menu=boolAction(menuAction);
+-    const bool primaryMenu=boolAction(skipAction,target.hand);
++    const bool primaryStart=boolAction(skipAction,target.hand);
++    const bool otherStart=boolAction(skipAction,1-target.hand);
++    const bool nativeStart=primaryStart||otherStart;
+     const bool primarySelect=boolAction(startAction,target.hand);
+-    const bool primaryMenuEdge=primaryMenu&&ssPrimaryMenuArmed;
+-    ssPrimaryMenuArmed=!primaryMenu;
+-    if(!primaryMenu)skipSwallow=false;
+-    const bool secondary=boolAction(skipAction,1-target.hand);
++    if(!nativeStart)skipSwallow=false;
++#ifdef __ANDROID__
++    const bool secondary=menuOpen&&nativeStart;
++#else
++    const bool secondary=otherStart||(menuOpen&&primaryStart);
++#endif
+     bool menuEdge=menu&&!ssMenuWas;ssMenuWas=menu;
+-    // The spare hand face button is the settings fallback.
++#ifndef __ANDROID__
++    // The spare hand remains the settings fallback on PC controllers.
+     if(!secondary){ssSecondaryArmed=true;ssSecondaryConsumed=false;ssSecondarySince=0;}
+     else if(ssSecondaryArmed&&!ssSecondaryConsumed){
+         if(!ssSecondarySince)ssSecondarySince=time;
+         else if(time-ssSecondarySince>=800000000LL){menuEdge=true;ssSecondaryConsumed=true;}
+     }
++#endif
+     const bool secondaryEdge=secondary&&!ssSecondaryWas;ssSecondaryWas=secondary;
+     if(menuOpen){
+-        release();updateMenu(time,menuEdge,primaryMenu||secondary,primaryMenuEdge||secondaryEdge);return;
++        release();updateMenu(time,menuEdge,secondary,secondaryEdge);return;
+     }
+     const auto openVrMenu=[&]{
+         ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssFireWas=false;
+@@ -2309,7 +2315,6 @@
+     }
+     const bool native3d=inputDomain==ss::dc_ui::Domain::World;
+     const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
+-    if(native3d&&primaryMenuEdge){openVrMenu();return;}
+     ssNativeUiVisible=nativeUi;
+     target.native_ui=nativeUi;target.ui_main_menu=mainMenuVerified;
+     // Cancel old generation/owner state before solving this frame's pose.
+@@ -2561,12 +2566,9 @@
+             (pull&&!ssFireWas&&ssSimulation.can_fire()&&nativeAmmo>0&&ssShotAt<0))
+         : rearHeld&&pull);
+     const bool pointedMenu=mainMenuVerified||knownNativeMenu||menuGeometry;
+-    const bool menuButton=primaryMenu&&!skipSwallow;
+-    target.start=!native3d&&!pointedMenu&&(menuButton||primarySelect);
+-    // Preserve the physical level even when the beam misses. Verified native
+-    // menus accept either face button through the same pointer as Trigger.
+-    const bool uiSelect=pull||(pointedMenu&&(menuButton||primarySelect));
+-    target.ui_select=nativeUi&&uiSelect;
++    target.start=nativeStart&&!skipSwallow&&!pointedMenu;
++    // Preserve the trigger level even when the beam misses the native menu.
++    target.ui_select=nativeUi&&pull;
+     glm::vec2 selectorScreen(-1.f);
+     if(target.tracked&&(nativeUi||smoothed.valid||frontHeld)&&inputDomain!=ss::dc_ui::Domain::Unknown){
+         // Native panels use the tracked controller ray. A rifle-length muzzle
+@@ -2599,7 +2601,7 @@
+                     const auto action=menuGeometry?nativeMenusProof.hit(*ctx,screen.x*640.f,screen.y*480.f):ss::dc_menu::MenuAction{};
+                     target.ui_action=ssNativeControls.resolve(action,menuGeometry?nativeMenusProof.page():-1,
+                         menuGeometry?unsigned(nativeMenusProof.source_context()):0,screen.x*640.f,screen.y*480.f);
+-                    if(uiSelect&&target.ui_action.kind==ss::dc_menu::MenuKind::ModeSelect&&target.ui_action.verb==ss::dc_menu::MenuVerb::Focus)
++                    if(pull&&target.ui_action.kind==ss::dc_menu::MenuKind::ModeSelect&&target.ui_action.verb==ss::dc_menu::MenuVerb::Focus)
+                         target.ui_action.verb=ss::dc_menu::MenuVerb::Confirm;
+                 }
+             }
+@@ -3929,7 +3931,7 @@
+         panel = Panel();
+         panel.lines = {
+             { "How to play Silent Scope", .077f, violet },
+-            { left ? "Point at menus and press X, Y or Trigger." : "Point at menus and press A, B or Trigger.", .046f, cream },
++            { "B or Y: Start / Pause. Point and pull Trigger to select.", .046f, cream },
+             { "Grip to pick up a rifle. Grip the fore-end for two-hand aim.", .043f, cream },
+             { left ? "Left stick up/down zooms. Hold X for Focus Mode." : "Right stick up/down zooms. Hold A for Focus Mode.", .043f, cream },
+             { "Arcade: auto reload. Simulation: manual bolt and magazine.", .042f, muted },
+@@ -4012,7 +4014,7 @@
+     setZoomInputAvailable(!silentScope&&focused&&located&&frameState.shouldRender&&!splashVisible);
+     if(silentScope){
+         if(splashVisible||ssGuideVisible){
+-            ssPrimaryMenuArmed=ssNativeUiVisible=ssRifleValid=false;
++            ssNativeUiVisible=ssRifleValid=false;
+             ss::dc_xr::input_bridge().invalidate();
+         }
+     }
+--- a/core/rend/vr/xr_labels.cpp
++++ b/core/rend/vr/xr_labels.cpp
+@@ -60,7 +60,7 @@
+                 auto& labels=words.hand[hand];
+                 if(hand==firing){
+                     labels.push_back({hand==0?controllers::Y:controllers::B,
+-                        kind>=2?"Pad click - Menu / Select":kind==0&&hand==0?"Y - Menu / Select":"B - Menu / Select"});
++                        kind>=2?"Pad click - Start / Pause":kind==0&&hand==0?"Y - Start / Pause":"B - Start / Pause"});
+                     labels.push_back({hand==0?controllers::X:controllers::A,
+                         kind>=2?"Menu - Focus Mode":kind==0&&hand==0?"X - Focus Mode":"A - Focus Mode"});
+                     labels.push_back({controllers::Trigger,"Trigger - Fire / Select"});
+@@ -68,7 +68,7 @@
+                     labels.push_back({controllers::Stick,kind==2?"Pad Up/Down - Scope zoom":"Up/Down - Zoom | Click - Laser/crosshair"});
+                 }else{
+                     labels.push_back({hand==0?controllers::Y:controllers::B,
+-                        kind>=2?"Hold Pad click - Settings":kind==0&&hand==0?"Hold Y - Settings":"Hold B - Settings"});
++                        kind>=2?"Hold Pad click - Settings":kind==0?(hand==0?"Y - Start / Pause":"B - Start / Pause"):"Hold B - Settings"});
+                     labels.push_back({controllers::Trigger,sim?"Trigger - Bolt / Magazine":"Trigger - Select"});
+                     labels.push_back({controllers::Grip,sim?"Grip - Front hold":"Grip - Support"});
+                     if(kind!=2)labels.push_back({controllers::Stick,"Click - Recenter"});

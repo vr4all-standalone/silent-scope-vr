@@ -1,0 +1,42 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2293,24 +2293,26 @@
+     const auto awpGrip=ss::dc_rifle::awp_foregrip;
+     const auto foregrip=simulation?ss::RifleForegrip{awpGrip.height*SsAwpScale,
+         awpGrip.front*SsAwpScale,awpGrip.rear*SsAwpScale}:ss::dc_rifle::foregrip;
+-    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,foregrip});
+     const auto head=headPose();
+     const auto belt=glm::translate(glm::mat4(1.f),glm::vec3(head[3]))*
+         glm::mat4_cast(yawOnly(glm::quat_cast(glm::mat3(head))));
+     const bool carryActive=simulation&&native3d&&ssHeadTracked&&originSet;
+-    auto carryModel=supported.model;
++    glm::mat4 carryModel(1.f);
+     if(carryActive){
+         const float side=target.hand==Right?1.f:-1.f;
+         const auto chest=glm::rotate(glm::translate(belt,glm::vec3(side*.21f,-.36f,-.32f)),
+             side*glm::radians(65.f),glm::vec3(0,1,0));
+         carryModel=ssCarry.update(chest,hands[target.hand].model,hands[1-target.hand].model,
+-            supported.model,foregrip,ssGripLatch[target.hand].engaged(),
+-            ssGripLatch[1-target.hand].engaged(),supported.supported);
++            foregrip,ssGripLatch[target.hand].engaged(),ssGripLatch[1-target.hand].engaged());
+     }
+     using Hold=ss::RifleCarry::Hold;
+     const bool rearHeld=!simulation||(carryActive&&ssCarry.hold()==Hold::Rear);
+     const bool frontHeld=carryActive&&ssCarry.hold()==Hold::Front;
+     const bool aimTracked=target.tracked&&rearHeld;
++    auto aimHands=hands;
++    if(carryActive&&rearHeld)aimHands[target.hand].model=carryModel;
++    const auto supported=ssSupport.update(aimHands,{target.focused&&aimTracked&&native3d,false,target.hand,
++        foregrip,carryActive&&ssCarry.rejoined_front()});
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+         ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&aimTracked&&native3d&&supported.valid});
+     if (smoothed.restarted)
+@@ -2329,7 +2331,7 @@
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+         ssRifleModel=ssSteadyAim.update(ssRifleModel,ocular,target.host_seconds,
+             boolAction(startAction,Right),aimTracked);
+-        if(carryActive)ssCarry.remember_aimed_pose(ssRifleModel);
++        if(carryActive)ssCarry.remember_aimed_pose(ssRifleModel,supported.supported);
+     } else {
+         if(carryActive)ssRifleModel=carryModel;
+         ssScopeStability.reset();

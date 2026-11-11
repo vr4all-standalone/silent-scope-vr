@@ -1,0 +1,18 @@
+{
+  "game": "sscope",
+  "description": "Silent Scope US UAD 1.33, MAME 0.289",
+  "nvramName": "m48t58y-70pc1_ua",
+  "roms": [
+    {"name":"830d01.27p","size":2097152,"crc":"de9b3dfa","sha1":"660652a5f745cb04687481c3626d8a43cd169193"},
+    {"name":"830a08.7s","size":524288,"crc":"2805ea1d","sha1":"2556a51ee98cb8f59bf081e916c69a24532196f1"},
+    {"name":"830a14.32u","size":4194304,"crc":"335793e1","sha1":"d582b53c3853abd59bc728f619a30c27cfc9497c"},
+    {"name":"830a13.24u","size":4194304,"crc":"d6e7877e","sha1":"b4d0e17ada7dd126ec564a20e7140775b4b3fdb7"},
+    {"name":"830a09.16p","size":4194304,"crc":"e4b9f305","sha1":"ce2c6f63bdc9374dde48d8359102b57e48b4fdeb"},
+    {"name":"830a10.14p","size":4194304,"crc":"8b8aaf7e","sha1":"49b694dc171c149056b87c15410a6bf37ff2987f"},
+    {"name":"m48t58y-70pc1_ua","size":8192,"crc":"458900fb","sha1":"ae2f5477e3999ecce5199fc4a53c5ddf78c4406d","status":"baddump-hand-built"}
+  ],
+  "legacyNvram": [
+    {"name":"m48t58y-70pc1","size":8192,"crc":"ee815325","sha1":"91b10802791b68a8360c0cd6c376c0c4bbbc6fa0"},
+    {"name":"m48t58y.35d","size":8192,"crc":"b077e262","sha1":"5cdcc1b742bf23562f4558216063fea903f045ab"}
+  ]
+}

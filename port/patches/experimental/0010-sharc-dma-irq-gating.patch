@@ -1,0 +1,22 @@
+--- a/src/devices/cpu/sharc/sharcdma.hxx
++++ b/src/devices/cpu/sharc/sharcdma.hxx
+@@ -326,11 +326,14 @@
+ 	m_core->dma_op[channel].timer->adjust(attotime::never, 0);
+ 
+-	m_core->irptl |= (1 << (channel+10));
+-
+-	// DMA interrupt
+-	if (m_core->imask & (1 << (channel+10)))
++	// Match dma_run_cycle: chained descriptors signal only with PCI set.
++	if (!m_core->dma_op[channel].chained || (m_core->dma_op[channel].chain_ptr & 0x20000))
+ 	{
+-		m_core->irq_pending |= 1 << (channel+10);
++		m_core->irptl |= (1 << (channel+10));
++		// IMASK gates delivery, not the guest-visible IRPTL latch.
++		if (m_core->imask & (1 << (channel+10)))
++		{
++			m_core->irq_pending |= 1 << (channel+10);
++		}
+ 	}
+ 
+ 	dma_op(channel);

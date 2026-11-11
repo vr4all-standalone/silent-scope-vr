@@ -1,0 +1,31 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2465,6 +2465,11 @@
+             ssHandBoxVisible[h]=carryActive&&hands[h].tracked&&!holding&&!(h==manipulator&&manipulating);
+             if(ssHandBoxVisible[h])ssHandBoxPose[h]=hands[h].model;
+         }
++    }else{
++        const int supportHand=1-target.hand;
++        ssHandBoxVisible[target.hand]=false;
++        ssHandBoxVisible[supportHand]=ssRifleValid&&hands[supportHand].tracked&&!supported.supported;
++        if(ssHandBoxVisible[supportHand])ssHandBoxPose[supportHand]=hands[supportHand].model;
+     }
+     const bool gameplayFire=simulation
+         ? rearHeld&&((ssSimulationShotAt>=0&&target.host_seconds-ssSimulationShotAt<.12)||
+@@ -2599,12 +2604,10 @@
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+         ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(SsAwpScale)),true);
+     }
+-    if(ssSimulationSelected){
+-        for(int h:{Left,Right})
+-            if(ssHandBoxVisible[h])ssRifle->draw_support_box(vp,ssHandBoxPose[h]);
+-        if(guide&&hold==Hold::Front&&ssSimulation.can_fire())
+-            ssRifle->draw_support_box(vp,rifleModel,true);
+-    }
++    for(int h:{Left,Right})
++        if(ssHandBoxVisible[h])ssRifle->draw_support_box(vp,ssHandBoxPose[h]);
++    if(guide&&hold==Hold::Front&&ssSimulation.can_fire())
++        ssRifle->draw_support_box(vp,rifleModel,true);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

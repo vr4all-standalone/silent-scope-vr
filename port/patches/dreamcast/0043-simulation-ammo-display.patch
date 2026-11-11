@@ -1,0 +1,20 @@
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -349,6 +349,8 @@
+     return silent_scope::dc_scope_hud::draw_ranges(gate, *gl.rendContext, *params, polygon, first, count,
+         triangles ? hud::Primitive::Triangles : hud::Primitive::Strip, [&](const hud::DrawRange& range) {
+             SetGPState<Type, SortingEnabled>(params, range.flip ? 1u : 0u);
++            if (silent_scope::dc_settings::simulation_mode() &&
++                (range.layer == hud::Layer::Ammo || range.layer == hud::Layer::AmmoPlate)) return;
+             if (range.layer != hud::Layer::World)
+                 silentScopeHudUniforms(range.layer, range.first, CurrentShader->vrOverlay, CurrentShader->vrHudSize, range.native_scale);
+             glDrawElements(triangles ? GL_TRIANGLES : GL_TRIANGLE_STRIP, range.count, gl.index_type,
+@@ -478,6 +480,8 @@
+                 if (silent_scope::dc_scope_hud::draw_ranges(silentScopeHudGate(true), *gl.rendContext, *params, gl.rendContext->sortedTriangles[p].polyIndex,
+                         gl.rendContext->sortedTriangles[p].first, gl.rendContext->sortedTriangles[p].count,
+                         hud::Primitive::Triangles, [&](const hud::DrawRange& range) {
++                            if (silent_scope::dc_settings::simulation_mode() &&
++                                (range.layer == hud::Layer::Ammo || range.layer == hud::Layer::AmmoPlate)) return;
+                             if (range.layer != hud::Layer::World)
+                                 silentScopeHudUniforms(range.layer, range.first,
+                                     gl.modvol_shader.vrOverlay, gl.modvol_shader.vrHudSize, range.native_scale, ShaderUniforms.vrHudSize);

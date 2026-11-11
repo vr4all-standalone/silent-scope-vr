@@ -1,0 +1,47 @@
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -2945,6 +2945,44 @@
+     silent_scope::dc_ta_ui::DecodedUiMask ui;ui.configure("T9507N",frame);
+     const auto result=finalize_decoded_lens(frame,ui);
+     frame.dcLens=result.lens;
++#if defined(__ANDROID__) && defined(USE_OPENXR)
++    // Capture only transitions following an attested gameplay frame.
++    // The diagnostic contains native geometry metadata and no headset imagery.
++    static uint64_t warningGeneration=0;
++    static bool hadWorld=false;
++    static unsigned reports=0;
++    if(!frame.isRTT){
++        if(warningGeneration!=frame.dcCamera.generation){
++            warningGeneration=frame.dcCamera.generation;
++            hadWorld=false;
++            reports=0;
++        }
++        if(hadWorld&&!result.lens.valid&&reports<16){
++            ++reports;
++            NOTICE_LOG(RENDERER,"SS_WORLD_DROP native_s=%.3f seq=%llu world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
++                frame.dcCamera.native_seconds,(unsigned long long)frame.dcCamera.submit_sequence,
++                (unsigned long long)result.world_triangles,(unsigned long long)result.ui_triangles,
++                (unsigned long long)result.unknown_triangles,(unsigned long long)result.mixed_triangles,
++                int(result.malformed),int(result.unsupported_modifiers));
++            if(result.has_problem){
++                const auto& polygons=result.problem_list==0?frame.global_param_op:
++                    result.problem_list==1?frame.global_param_pt:frame.global_param_tr;
++                if(result.problem_polygon<polygons.size()){
++                    const auto& p=polygons[result.problem_polygon];
++                    NOTICE_LOG(RENDERER,"SS_WORLD_DROP_MATERIAL list=%u poly=%zu count=%u isp=%08x tsp=%08x tcw=%08x pcw=%08x clip=%08x",
++                        result.problem_list,result.problem_polygon,p.count,p.isp.full,p.tsp.full,p.tcw.full,p.pcw.full,p.tileclip);
++                }
++                for(auto i:result.problem_vertices){
++                    const auto& v=frame.verts[i];
++                    NOTICE_LOG(RENDERER,"SS_WORLD_DROP_VERTEX index=%u xy=%.4f,%.4f q=%.8f uv=%.6f,%.6f rgba=%u,%u,%u,%u owner=%d",
++                        i,v.x,v.y,v.z,v.u,v.v,unsigned(v.col[0]),unsigned(v.col[1]),unsigned(v.col[2]),unsigned(v.col[3]),
++                        int(frame.dcVertexLens[i].valid));
++                }
++            }
++        }
++        hadWorld=result.lens.valid;
++    }
++#endif
+     environment_command_lens_probe().record_decoded(frame,result);
+ }
+ }}

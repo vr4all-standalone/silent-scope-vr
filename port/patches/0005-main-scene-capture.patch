@@ -1,0 +1,201 @@
+diff --git a/src/devices/video/voodoo.cpp b/src/devices/video/voodoo.cpp
+index fbfce24f..6320fb10 100644
+--- a/src/devices/video/voodoo.cpp
++++ b/src/devices/video/voodoo.cpp
+@@ -117,6 +117,7 @@ TODO:
+ 
+ #include "emu.h"
+ #include "voodoo.h"
++#include "silent_scope/scene/voodoo_hooks.h"
+ 
+ #include "input.h" // for video debug keys
+ 
+@@ -420,6 +421,7 @@ inline rasterizer_texture &tmu_state::prepare_texture(voodoo_renderer &renderer)
+ 	// if the texture parameters are dirty, update them
+ 	if (m_regdirty)
+ 	{
++		silent_scope::scene::invalidate_captured_textures();
+ 		// determine the lookup
+ 		auto const texmode = m_reg.texture_mode();
+ 		u32 const texformat = texmode.format();
+@@ -1046,6 +1048,10 @@ void voodoo_1_device::device_stop()
+ 
+ void voodoo_1_device::device_reset()
+ {
++	if (silent_scope::scene::capture_enabled()) {
++		silent_scope::scene::voodoo_capture().reset();
++		silent_scope::scene::invalidate_captured_textures();
++	}
+ 	soft_reset();
+ }
+ 
+@@ -1611,6 +1617,7 @@ void voodoo_1_device::internal_lfb_w(offs_t offset, u32 data, u32 mem_mask)
+ 	u16 *dest = draw_buffer_indirect(lfbmode.write_buffer_select());
+ 	if (dest == nullptr)
+ 		return;
++	u16 *const capture_dest_base = dest;
+ 	u16 *depth = aux_buffer();
+ 	u16 *end = ram_end();
+ 
+@@ -1644,7 +1651,14 @@ void voodoo_1_device::internal_lfb_w(offs_t offset, u32 data, u32 mem_mask)
+ 				// write to the RGB buffer
+ 				rgb_t pixel = src_color[pix];
+ 				if ((mask & LFB_RGB_PRESENT_0) != 0 && dest + pix < end)
++				{
+ 					dest[pix] = dither.pixel(x, pixel.r(), pixel.g(), pixel.b());
++					bool const capture_depth = depth != nullptr && depth + pix < end
++						&& !fbzmode.enable_alpha_planes() && fbzmode.wbuffer_select()
++						&& (mask & (LFB_DEPTH_PRESENT_0 | LFB_DEPTH_PRESENT_MSW_0)) != 0;
++					if (silent_scope::scene::capture_device(tag())) silent_scope::scene::capture_lfb_pixel(capture_dest_base, x, scry, dest[pix], m_width, m_height,
++						capture_depth ? src_depth[pix] : 65535);
++				}
+ 
+ 				// make sure we have an aux buffer to write to
+ 				if (depth != nullptr && depth + pix < end)
+@@ -1885,6 +1899,7 @@ u32 voodoo_1_device::expand_lfb_data(reg_lfb_mode const lfbmode, u32 data, rgb_t
+ 
+ void voodoo_1_device::internal_texture_w(offs_t offset, u32 data)
+ {
++	silent_scope::scene::invalidate_captured_textures();
+ 	// statistics
+ 	if (DEBUG_STATS)
+ 		m_stats.m_tex_writes++;
+@@ -2322,6 +2337,9 @@ u32 voodoo_1_device::reg_fastfill_w(u32 chipmask, u32 regnum, u32 data)
+ 	poly.color1 = m_reg.color1().argb();
+ 	poly.zacolor = m_reg.za_color();
+ 
++	if (m_reg.fbz_mode().rgb_buffer_mask() && silent_scope::scene::capture_device(tag()))
++		silent_scope::scene::capture_clear(poly.destbase, u32(poly.color1));
++
+ 	// 2 pixels per clock
+ 	return m_renderer->enqueue_fastfill(poly) / 2;
+ }
+@@ -2624,6 +2642,7 @@ void voodoo_1_device::swap_buffers()
+ 
+ 	// rotate the buffers; implementation differs between models
+ 	rotate_buffers();
++	if (silent_scope::scene::capture_device(tag())) silent_scope::scene::capture_present(front_buffer(), m_width, m_height, m_xoffs, m_yoffs, m_renderer->rowpixels());
+ 
+ 	// decrement the pending count and reset our state
+ 	if (m_swaps_pending != 0)
+@@ -3012,7 +3031,13 @@ s32 voodoo_1_device::triangle()
+ 	vert[2].y = float(m_reg.cy()) * (1.0f / 16.0f);
+ 
+ 	// enqueue a triangle
+-	s32 pixels = m_renderer->enqueue_triangle(poly, vert);
++	if (silent_scope::scene::capture_device(tag())) silent_scope::scene::capture_triangle(poly, vert,
++		silent_scope::scene::RenderState{m_reg.fbz_colorpath().raw(), m_reg.alpha_mode().raw(),
++			m_reg.fbz_mode().raw(), m_reg.fog_mode().raw(), m_tmu[0].regs().texture_mode().raw(),
++			u32(poly.color0), u32(poly.color1), u32(poly.fogcolor), u32(poly.chromakey)},
++		m_tmu[1].regs().texture_mode().raw(),m_renderer->capture_fog(),m_renderer->capture_fog_mask());
++	s32 pixels;
++	{silent_scope::scene::EmulationScope setup_profile("<raster-setup>");pixels = m_renderer->enqueue_triangle(poly, vert);}
+ 
+ 	// update stats
+ 	m_reg.add(voodoo_regs::reg_fbiTrianglesOut, 1);
+diff --git a/src/devices/video/voodoo_render.cpp b/src/devices/video/voodoo_render.cpp
+index f656604b..94df591c 100644
+--- a/src/devices/video/voodoo_render.cpp
++++ b/src/devices/video/voodoo_render.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "emu.h"
+ #include "voodoo.h"
++#include "silent_scope/scene/raster_profile.h"
+ 
+ #include "endianness.h"
+ 
+@@ -908,6 +909,36 @@ inline rgb_t rasterizer_texture::lookup_single_texel(u32 format, u32 texbase, s3
+ }
+ 
+ 
++// Cache exactly the bytes consumed by capture_argb, including wrapped RAM and
++// mutable palette/NCC contents. Static lookup tables are fixed by format.
++void rasterizer_texture::capture_source(u32 format, silent_scope::scene::TextureSource &source) const
++{
++ source.width=capture_width();source.height=capture_height();source.lod=capture_lod();source.format=format;
++ const size_t bpp=format<8?1:2,size=size_t(source.width)*source.height*bpp;
++ source.bytes.resize(size);const u32 base=m_lodoffset[source.lod];
++ if(bpp==1||((base&1)==0&&(m_mask&1)!=0)){
++  size_t done=0;u32 address=base;
++  while(done<size){size_t count=std::min(size-done,size_t(m_mask)+1-address);
++   std::memcpy(source.bytes.data()+done,m_ram+address,count);done+=count;address=0;}
++ }else{
++  for(size_t i=0;i<size;i+=2)std::memcpy(source.bytes.data()+i,m_ram+((base+i)&m_mask),2);
++ }
++ const bool mutable_lookup=format==1||format==5||format==6||format==7||format==9||format==14||format==15;
++ source.palette.resize(mutable_lookup?256:0);
++ for(size_t i=0;i<source.palette.size();i++)source.palette[i]=u32(m_lookup[i]);
++}
++
++// A scene snapshot must not retain references to live TMU RAM or palette tables.
++std::vector<u32> rasterizer_texture::capture_argb(u32 format)
++{
++	std::vector<u32> pixels(capture_width() * capture_height());
++	for (u32 y = 0; y < capture_height(); ++y)
++		for (u32 x = 0; x < capture_width(); ++x)
++			pixels[y * capture_width() + x] = lookup_single_texel(format, m_lodoffset[capture_lod()], x, y * capture_width());
++	return pixels;
++}
++
++
+ //-------------------------------------------------
+ //  fetch_texel - fetch the texel value based on
+ //  the S,T coordinates and LOD
+@@ -1365,6 +1396,11 @@ u32 voodoo_renderer::enqueue_triangle(poly_data &poly, vertex_t const *vert)
+ 	// set the info and render the triangle
+ 	info->polys++;
+ 	poly.info = info;
++    if(silent_scope::scene::raster_profile_path()){
++        silent_scope::scene::RasterKey key{poly.raster.generic(),poly.raster.fbzcp().raw(),poly.raster.alphamode().raw(),poly.raster.fogmode().raw(),poly.raster.fbzmode().raw(),poly.raster.texmode0().raw(),poly.raster.texmode1().raw()};
++        bool generic=info->is_generic;auto pixels=render_triangle<0>(global_cliprect,poly.info->callback,vert[0],vert[1],vert[2]);
++        silent_scope::scene::record_raster(key,pixels,generic);return pixels;
++    }
+ 	return render_triangle<0>(global_cliprect, poly.info->callback, vert[0], vert[1], vert[2]);
+ }
+ 
+diff --git a/src/devices/video/voodoo_render.h b/src/devices/video/voodoo_render.h
+index 03894873..4ed9e04a 100644
+--- a/src/devices/video/voodoo_render.h
++++ b/src/devices/video/voodoo_render.h
+@@ -14,6 +14,7 @@
+ #pragma once
+ 
+ #include "video/poly.h"
++#include "silent_scope/scene/capture_texture_cache.h"
+ #include "video/rgbutil.h"
+ 
+ 
+@@ -343,6 +344,17 @@ private:
+ class rasterizer_texture
+ {
+ public:
++	// CarnEvil VR snapshots own decoded texture data before TMU RAM is reused.
++	u32 capture_lod() const {
++		u32 lod = std::min<u32>(m_lodmin >> 8, 8);
++		while (lod < 8 && !(m_lodmask & (1 << lod))) ++lod;
++		return lod;
++	}
++	u32 capture_width() const { return std::max<u32>(1, (u32(m_wmask) + 1) >> capture_lod()); }
++	u32 capture_height() const { return std::max<u32>(1, (u32(m_hmask) + 1) >> capture_lod()); }
++	std::vector<u32> capture_argb(u32 format);
++	void capture_source(u32 format, silent_scope::scene::TextureSource &source) const;
++
+ 	// recompute internal values based on parameters
+ 	void recompute(voodoo_regs const &regs, u8 *ram, u32 mask, rgb_t const *lookup, u32 addrmask, u8 addrshift);
+ 
+@@ -531,6 +543,13 @@ public:
+ 	void pixel_pipeline(thread_stats_block &threadstats, u16 *dest, u16 *depth, s32 x, s32 scry, rgb_t color, u16 sz);
+ 
+ 	// update the fog tables
++	std::array<u16,64> capture_fog() const {
++        std::array<u16,64> result{};
++        for(unsigned i=0;i<64;i++)result[i]=m_fogdelta[i]|(u16(m_fogblend[i])<<8);
++        return result;
++    }
++    u8 capture_fog_mask() const {return m_fogdelta_mask;}
++
+ 	void write_fog(u32 base, u32 data)
+ 	{
+ 		u32 oldval = m_fogdelta[base + 0] | (m_fogblend[base + 0] << 8) | (m_fogdelta[base + 1] << 16) | (m_fogblend[base + 1] << 24);
+

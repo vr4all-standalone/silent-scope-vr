@@ -1,0 +1,21 @@
+--- a/core/rend/vr/xr_panel.cpp
++++ b/core/rend/vr/xr_panel.cpp
+@@ -46,7 +46,7 @@
+ 
+ // A single raster layout serves painting, ray targeting and presentation focus.
+ // Six slots cover the largest main/advanced page without moving the panel.
+-constexpr int SettingsWidth = 1200, SettingsHeight = 880, SettingsMaxRows = 6;
++constexpr int SettingsWidth = 1200, SettingsHeight = 880, SettingsMaxRows = 7;
+ constexpr float SettingsWidthMetres = 1.1f;
+ constexpr float SettingsRowTop = 312.f, SettingsRowPitch = 80.f, SettingsRowHeight = 70.f;
+ constexpr float SettingsRight = 1140.f, SettingsChoiceGap = 7.f;
+@@ -691,7 +691,8 @@
+ {
+ 	if (row < 0 || row >= (int)panel.rows.size() || row >= (panel.dialog ? 2 : SettingsMaxRows)) return {};
+ 	if (panel.dialog) return normalized(216.f, 492.f + row * 96.f, 768.f, 82.f);
+-	return normalized(36.f, SettingsRowTop + row * SettingsRowPitch, 1128.f, SettingsRowHeight);
++	const bool compact=panel.rows.size()>6;
++    return normalized(36.f,SettingsRowTop+row*(compact?70.f:SettingsRowPitch),1128.f,compact?62.f:SettingsRowHeight);
+ }
+ 
+ SettingsRect settingsTabRect(int tab)

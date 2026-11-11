@@ -1,0 +1,82 @@
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -58,7 +58,7 @@
+      facts_.source_context==dc_menu::StoryRouteContext&&facts_.interactive&&facts_.aim_verified){
+    // Tower Building, Air Battle, and Stadium in the stock 640x480 route view.
+    // The heading and lower scope previews are separate from these card faces.
+-   constexpr Rect cards[]{{16,170,208,258},{213,170,427,258},{432,170,624,258}};
++   constexpr Rect cards[]{{17,169,219,260},{219,169,421,260},{421,169,623,260}};
+    for(int route=0;route<3;++route){
+     if(!cards[route].hit(x,y)||!(facts_.available_regions&(1u<<route)))continue;
+     auto hit=action(V::Focus);hit.row=route;return hit;
+--- a/core/dreamcast/dc_camera_types.h
++++ b/core/dreamcast/dc_camera_types.h
+@@ -9,6 +9,7 @@
+     uint32_t ta_address{},destination{};
+     uint32_t story_scene{};
+     uint16_t story_stage{0xffff};
++    uint16_t story_route{0xffff};
+     bool supported{},is_rtt{},candidates_captured{},code_guard_valid{};
+     bool cache_captured{};
+     float cache_fx{},cache_fy{},cache_cx{},cache_cy{};
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -322,10 +322,15 @@
+ #if defined(__ANDROID__) && defined(USE_OPENXR)
+     if(ctx.dcCamera.supported&&!ctx.isRTT&&ReadMem8_nommu(0x8c1b015e)==0){
+         const u32 scene=ReadMem32_nommu(0x8c1b014c);
+-        if((scene&0xffffu)==0x0506u&&!(ReadMem32_nommu(0x8c1b088c)&0x4000u)
++        if((scene&0xffffu)==0x0506u&&!(ReadMem32_nommu(0x8c1b088c)&0x00404000u)
+             &&ReadMem32_nommu(0x8c26fda8)==0){
+             ctx.dcCamera.story_scene=scene;
+             ctx.dcCamera.story_stage=ReadMem16_nommu(0x8c1b0884);
++            // The native picker stores its completed Story choice here.
++            if(ReadMem16_nommu(0x8c2214c8)==1&&ReadMem8_nommu(0x8c2214c0)==2){
++                const auto route=ReadMem16_nommu(0x8c2214ae);
++                if(route<3)ctx.dcCamera.story_route=route;
++            }
+         }
+     }
+ #endif
+@@ -3045,7 +3050,7 @@
+     static uint64_t warningGeneration=0;
+     static bool hadWorld=false;
+     static unsigned reports=0, detailReports=0;
+-    static uint16_t tracedStage=0xffff;
++    static uint32_t tracedStage=0xffffffffu;
+     static double blockedSince=-1;
+     static bool reportedStageBlock=false;
+     if(!frame.isRTT){
+@@ -3054,7 +3059,7 @@
+             hadWorld=false;
+             reports=0;
+             detailReports=0;
+-            tracedStage=0xffff;
++            tracedStage=0xffffffffu;
+             blockedSince=-1;
+             reportedStageBlock=false;
+         }
+@@ -3062,8 +3067,10 @@
+         // Take one bounded sample of a sustained rejection per Story stage.
+         const auto stage=frame.dcCamera.story_stage;
+         const auto now=frame.dcCamera.native_seconds;
+-        if(stage!=0xffff&&stage!=tracedStage){
+-            tracedStage=stage;
++        const auto route=frame.dcCamera.story_route;
++        const u32 stageKey=u32(stage)<<16|route;
++        if(stage!=0xffff&&stageKey!=tracedStage){
++            tracedStage=stageKey;
+             blockedSince=-1;
+             reportedStageBlock=false;
+         }
+@@ -3074,8 +3081,8 @@
+         const bool persistentStageBlock=blockedSince>=0&&now-blockedSince>=.6;
+         if(persistentStageBlock){
+             reportedStageBlock=true;
+-            NOTICE_LOG(RENDERER,"SS_STORY_STAGE_BLOCK native_s=%.3f seq=%llu scene=%08x stage=%u lens=%d size=%ux%u world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
+-                now,(unsigned long long)frame.dcCamera.submit_sequence,frame.dcCamera.story_scene,unsigned(stage),
++            NOTICE_LOG(RENDERER,"SS_STORY_STAGE_BLOCK native_s=%.3f seq=%llu scene=%08x stage=%u route=%u lens=%d size=%ux%u world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
++                now,(unsigned long long)frame.dcCamera.submit_sequence,frame.dcCamera.story_scene,unsigned(stage),unsigned(route),
+                 int(result.lens.valid),unsigned(frame.framebufferWidth),unsigned(frame.framebufferHeight),
+                 (unsigned long long)result.world_triangles,(unsigned long long)result.ui_triangles,
+                 (unsigned long long)result.unknown_triangles,(unsigned long long)result.mixed_triangles,

@@ -1,0 +1,141 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -15,6 +15,8 @@
+ #include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_xr_bridge.h"
+ #include "dreamcast/dc_ui_domain.h"
++#include "dreamcast/dc_native_menus.h"
++#include "dreamcast/dc_menu_controls.h"
+ #include "dreamcast/dc_mouse_native.h"
+ #include "dreamcast/dc_view_runtime.h"
+ #include "dreamcast/dc_scope_composite.h"
+@@ -134,6 +136,7 @@
+ ss::RifleSmoothing ssSmoothing;
+ std::array<ss::GripLatch,2> ssGripLatch;
+ ss::dc_mouse::MenuStickDirection ssNativeMenuStick;
++ss::dc_menu_controls::Controller ssNativeControls;
+ int ssPoseHand=-1;
+ bool ssSupported{};
+ ss::dc_xr::FrameRates ssRates;
+@@ -145,7 +148,7 @@
+ uint64_t ssNativeGeneration{};
+ XrTime ssSecondarySince{};
+ void resetSilentScopePose(){
+-    ssSupport.reset();ssSmoothing.reset();ssNativeMenuStick.reset();
++    ssSupport.reset();ssSmoothing.reset();ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+ }
+@@ -2186,7 +2189,16 @@
+     }
+     const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
+         &&config::VrReproject&&!gles_vr_showing_framebuffer();
+-    const auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
++    const auto menuSource=ss::dc_mouse::native_menu_snapshot();
++    ss::dc_native_menus::NativeMenusProof nativeMenusProof;
++    const bool menuGeometry=ctx&&nativeMenusProof.configure(settings.content.gameId,*ctx);
++    const bool knownNativeMenu=menuSource.verified&&menuSource.context_active&&
++        menuSource.kind!=ss::dc_menu::MenuKind::None&&menuSource.kind!=ss::dc_menu::MenuKind::Main;
++    auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
++    // Native source authority can block gameplay during an active menu even
++    // when a changing/unknown raster has no actionable native item geometry.
++    // This changes input only; native rendering/clipping ownership is intact.
++    if(knownNativeMenu||menuGeometry)inputDomain=ss::dc_ui::Domain::NativeUi;
+     ss::dc_native_menu::MainMenuProof mainMenuProof;
+     const bool mainMenuVerified=inputDomain==ss::dc_ui::Domain::NativeUi&&ctx&&
+         mainMenuProof.configure(settings.content.gameId,*ctx);
+@@ -2203,6 +2215,12 @@
+     target.native_ui=nativeUi;target.ui_main_menu=mainMenuVerified;
+     // Cancel old generation/owner state before solving this frame's pose.
+     if(ssPoseHand!=target.hand){resetSilentScopePose();ssPoseHand=target.hand;}
++    const bool ownedControlFrame=ctx&&!ctx->isRTT&&ctx->framebufferWidth==640&&ctx->framebufferHeight==480&&
++        ctx->dcCamera.supported&&ctx->dcCamera.generation&&ctx->dcCamera.submit_sequence;
++    ssNativeControls.begin(knownNativeMenu?menuSource:ss::dc_menu::MenuFacts{},ownedControlFrame,
++        menuGeometry?nativeMenusProof.page():-1);
++    if(knownNativeMenu)target.ui_action=ssNativeControls.context();
++    else if(menuGeometry)target.ui_action.kind=nativeMenusProof.kind();
+     XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
+     constexpr auto required=XR_SPACE_LOCATION_POSITION_VALID_BIT|XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|
+         XR_SPACE_LOCATION_POSITION_TRACKED_BIT|XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+@@ -2236,11 +2254,28 @@
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+         ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
+     if(smoothed.valid)ssRifleModel=smoothed.model;
++    // Bounded real-runtime evidence distinguishes steady lag from repeated
++    // lifecycle seeds. No per-frame log or gameplay target is inferred.
++    static double aimReportAt=-1;static unsigned aimSamples{},aimRestarts{},aimInvalid{},aimReports{};
++    if(native3d){++aimSamples;if(smoothed.restarted)++aimRestarts;if(!smoothed.valid)++aimInvalid;
++        if(aimReports<48&&(aimReportAt<0||target.host_seconds-aimReportAt>=5)){
++            double lag=-1;
++            if(smoothed.valid&&supported.valid){const auto a=glm::normalize(glm::quat_cast(glm::mat3(supported.model)));
++                const auto b=glm::normalize(glm::quat_cast(glm::mat3(smoothed.model)));
++                lag=glm::degrees(2*std::acos(std::clamp(double(std::abs(glm::dot(a,b))),0.,1.)));}
++            NOTICE_LOG(INPUT,"SS_AIM level=%d samples=%u restarts=%u invalid=%u supported=%u lag_deg=%.3f",
++                ss::dc_settings::aim_smoothing_level(),aimSamples,aimRestarts,aimInvalid,unsigned(supported.supported),lag);
++            aimReportAt=target.host_seconds;aimSamples=aimRestarts=aimInvalid=0;++aimReports;
++        }
++    }
+     if(supported.supported&&!ssSupported)haptic(1-target.hand,.025f,.25f);
+     ssSupported=supported.supported;
+     ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&smoothed.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
++    // Preserve the physical level even when the beam misses or its projection
++    // is unavailable; captured valid hits are independently edge-latched.
++    target.ui_select=nativeUi&&pull;
+     if(target.tracked&&(nativeUi||smoothed.valid)&&inputDomain!=ss::dc_ui::Domain::Unknown){
+         // Native panels use the tracked controller ray. A rifle-length muzzle
+         // can already be past the panel at ordinary arm's length.
+@@ -2255,7 +2290,7 @@
+             const glm::vec3 o=glm::vec3(muzzle.x,-muzzle.y,muzzle.z)/scale;
+             const glm::vec3 d=glm::normalize(glm::vec3(forward.x,-forward.y,forward.z));
+             target.native_direction={d.x,d.y,d.z};target.direction_valid=native3d;
+-            glm::vec2 screen;float dist=-1;glm::vec3 native(0);
++            glm::vec2 screen(-10000.f);float dist=-1;glm::vec3 native(0);
+             bool hit=false;
+             if(nativeUi)hit=aimAtFlatScreen(o,d,screen,dist);
+             else if(native3d)hit=aimAtScene(*ctx,o,d,screen,dist,&native);
+@@ -2268,6 +2303,13 @@
+                 // A miss remains Main Menu, never an unpositioned click.
+                 if(target.ui_main_menu&&target.point_valid)
+                     target.ui_pointer_item=mainMenuProof.hit(*ctx,screen.x*640.f,screen.y*480.f);
++                else if(knownNativeMenu&&target.point_valid){
++                    const auto action=menuGeometry?nativeMenusProof.hit(*ctx,screen.x*640.f,screen.y*480.f):ss::dc_menu::MenuAction{};
++                    target.ui_action=ssNativeControls.resolve(action,menuGeometry?nativeMenusProof.page():-1,
++                        menuGeometry?unsigned(nativeMenusProof.source_context()):0,screen.x*640.f,screen.y*480.f);
++                    if(pull&&target.ui_action.kind==ss::dc_menu::MenuKind::ModeSelect&&target.ui_action.verb==ss::dc_menu::MenuVerb::Focus)
++                        target.ui_action.verb=ss::dc_menu::MenuVerb::Confirm;
++                }
+             }
+             // Native gameplay HUD never changes the native input domain. If
+             // the generic picker reports a HUD hit, keep only the barrel ray:
+@@ -2314,6 +2356,21 @@
+     glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
+     glClear(GL_DEPTH_BUFFER_BIT);
+     ssRifle->draw_rifle_texture(vp,ssRifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
++}
++void drawSilentScopeNativeControls(const glm::mat4& vp){
++    if(menuOpen||!focused)return;
++    const float depth=ss::dc_settings::panel_distance_metres();const float focal=config::VrFocal;
++    if(!std::isfinite(depth)||depth<=0||!std::isfinite(focal)||focal<=0)return;
++    const float pixel=depth/focal;
++    for(const auto& button:ssNativeControls.buttons()){
++        const auto& r=button.bounds;const float hx=(r.x1-r.x0)*.5f*pixel,hy=(r.y1-r.y0)*.5f*pixel;
++        const auto model=glm::translate(glm::mat4(1),glm::vec3(((r.x0+r.x1)*.5f-320)*pixel,
++            -( (r.y0+r.y1)*.5f-240)*pixel,-depth));
++        drawTexture(vp,model,0,hx,hy,glm::vec4(theme::Selection,.97f));
++        int w=0,h=0;auto texture=textTexture(button.label,32,button.enabled?theme::Text:theme::Dim,w,h);
++        if(texture&&w>0&&h>0){const float textHy=std::min(hy*.66f,hx*.9f*h/w);
++            drawTexture(vp,model,texture,textHy*w/h,textHy);}
++    }
+ }
+ void drawSilentScopeInfo(const glm::mat4& vp){
+     if(ss::dc_settings::fps_counter()){
+@@ -3645,6 +3702,7 @@
+             glBindFramebuffer(GL_FRAMEBUFFER,c.fbos[index]);glViewport(0,0,c.width,c.height);
+             drawSilentScope(eyeProjection(views[i].fov)*view,relativePosition(views[i].pose.position),scope);
+         }
++        if(silentScope&&focused)drawSilentScopeNativeControls(eyeProjection(views[i].fov)*view);
+         if (menuOpen && !darkRoom)
+ 		{
+ 			// the VR menu over the paused game, the guns over it

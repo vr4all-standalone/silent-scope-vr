@@ -1,0 +1,23 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2262,14 +2262,16 @@
+         ssScopeStability.reset();
+     if (smoothed.valid) {
+         const auto local = glm::inverse(smoothed.model);
+-        bool aligned = false;
++        float alignment = 0.f;
+         for (const auto& view : views) {
+             const auto eye = glm::vec3(local * glm::vec4(relativePosition(view.pose.position), 1)) - ss::dc_rifle::ocular;
+-            aligned |= ss::scope_visibility({eye.x, eye.y, eye.z}, {}).visible;
++            const float radial = 1.f - glm::smoothstep(.018f, .047f, std::hypot(eye.x, eye.y));
++            const float relief = glm::smoothstep(.006f, .030f, eye.z) *
++                (1.f - glm::smoothstep(.24f, .34f, eye.z));
++            alignment = std::max(alignment, radial * relief);
+         }
+         ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ss::dc_rifle::ocular,
+-            {0, ss::dc_rifle::foregrip.height, ss::dc_rifle::foregrip.front},
+-            target.host_seconds, aligned, ss::dc_settings::scope_stability_level());
++            target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+     } else {
+         ssScopeStability.reset();
+     }

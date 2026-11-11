@@ -1,0 +1,69 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -155,7 +155,9 @@
+ int ssSimulationAmmoBefore=-1;
+ bool ssSimulationShotBraced=false;
+ double ssSimulationShotAt=-1;
+-glm::mat4 ssMagazineInHand(1.f), ssSupportBox(1.f), ssSpareMagazineAnchor(1.f);
++glm::mat4 ssMagazineInHand(1.f), ssSpareMagazineAnchor(1.f);
++std::array<glm::mat4,2> ssHandBoxPose;
++std::array<bool,2> ssHandBoxVisible{};
+ bool ssSupportLeft=true;
+ bool ssMagazineTracked=false;
+ bool ssScopeZoomArmed{};
+@@ -176,7 +178,7 @@
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
+-    ssCarry.reset();ssManipulationHand=-1;ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
++    ssCarry.reset();ssHandBoxVisible.fill(false);ssManipulationHand=-1;ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2332,7 +2334,10 @@
+             target.host_seconds, alignment, ss::dc_settings::scope_stability_level());
+         ssRifleModel=ssSteadyAim.update(ssRifleModel,ocular,target.host_seconds,
+             boolAction(startAction,Right),aimTracked);
+-        if(carryActive)ssCarry.remember_aimed_pose(ssRifleModel,supported.supported);
++        if(carryActive){
++            ssRifleModel[3]=hands[target.hand].model[3];
++            ssCarry.remember_aimed_pose(ssRifleModel,supported.supported);
++        }
+     } else {
+         if(carryActive)ssRifleModel=carryModel;
+         ssScopeStability.reset();
+@@ -2427,7 +2432,6 @@
+         ssMagazineTracked=carryActive&&hand.tracked;
+         if(ssMagazineTracked){
+             const auto local=glm::vec3(glm::inverse(ssRifleModel)*hand.model[3])/SsAwpScale;
+-            ssSupportBox=hand.model;
+             const bool nearBelt=glm::distance(glm::vec3(hand.model[3]),glm::vec3(ssSpareMagazineAnchor[3]))<=.14f;
+             const auto previousEjections=ssSimulation.ejections();
+             const int roundsBefore=ssSimulation.rounds();
+@@ -2446,6 +2450,14 @@
+             }
+             ssMagazineInHand=glm::translate(glm::scale(hand.model,glm::vec3(SsAwpScale)),-ss::RifleSimulation::MagazineBase);
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
++        using Magazine=ss::RifleSimulation::Magazine;
++        const auto magazine=ssSimulation.magazine();
++        const bool manipulating=ssSimulation.holding_bolt()||magazine==Magazine::EmptyInHand||magazine==Magazine::FreshInHand;
++        for(int h:{Left,Right}){
++            const bool holding=h==target.hand?rearHeld:(frontHeld||(rearHeld&&supported.supported));
++            ssHandBoxVisible[h]=carryActive&&hands[h].tracked&&!holding&&!(h==manipulator&&manipulating);
++            if(ssHandBoxVisible[h])ssHandBoxPose[h]=hands[h].model;
++        }
+     }
+     const bool gameplayFire=simulation
+         ? rearHeld&&((ssSimulationShotAt>=0&&target.host_seconds-ssSimulationShotAt<.12)||
+@@ -2574,8 +2586,9 @@
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+         ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(SsAwpScale)),true);
+     }
+-    if(ssSimulationSelected&&ssMagazineTracked&&ssCarry.hold()!=ss::RifleCarry::Hold::Front&&!ssSupported&&!inHand&&!ssSimulation.holding_bolt())
+-        ssRifle->draw_support_box(vp,ssSupportBox);
++    if(ssSimulationSelected)
++        for(int h:{Left,Right})
++            if(ssHandBoxVisible[h])ssRifle->draw_support_box(vp,ssHandBoxPose[h]);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

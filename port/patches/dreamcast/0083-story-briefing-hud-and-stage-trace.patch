@@ -1,0 +1,72 @@
+--- a/core/dreamcast/dc_hud_message.h
++++ b/core/dreamcast/dc_hud_message.h
+@@ -77,7 +77,10 @@
+              (row_matches(0,"Calm down!")&&row_matches(1,{}))||
+              (row_matches(0,"Bad luck!")&&row_matches(1,{}))||
+              (row_matches(0,"You've lost your touch.")&&row_matches(1,{}))||
+-             (row_matches(0,"Watch out!")&&row_matches(1,"The enemy is going to shoot!"))))return false;
++             (row_matches(0,"Watch out!")&&row_matches(1,"The enemy is going to shoot!"))||
++             (row_matches(0,"Take out all surviving sniper enemies")&&row_matches(1,"from the roof!"))||
++             (row_matches(0,"Terrorists have kidnapped the President's")&&row_matches(1,"daughter and are hiding in the stadium."))||
++             (row_matches(0,"We can't identify them from here.")&&row_matches(1,"Go and search for them! Over."))))return false;
+         frame_=&ctx;generation_=ctx.dcCamera.generation;submission_=ctx.dcCamera.submit_sequence;valid_=true;return true;
+     }
+     template<class Context> dc_hud::Decision classify(const Context& ctx,unsigned list,std::size_t polygon,uint32_t a,uint32_t b,uint32_t c)const{
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -3052,7 +3052,8 @@
+     static unsigned reports=0, detailReports=0;
+     static uint32_t tracedStage=0xffffffffu;
+     static double blockedSince=-1;
+-    static bool reportedStageBlock=false;
++    static double lastStageReport=-1;
++    static unsigned stageReports=0;
+     if(!frame.isRTT){
+         if(warningGeneration!=frame.dcCamera.generation){
+             warningGeneration=frame.dcCamera.generation;
+@@ -3061,10 +3062,11 @@
+             detailReports=0;
+             tracedStage=0xffffffffu;
+             blockedSince=-1;
+-            reportedStageBlock=false;
++            lastStageReport=-1;
++            stageReports=0;
+         }
+         // A stage can start flat and never acquire a valid world frame.
+-        // Take one bounded sample of a sustained rejection per Story stage.
++        // Sample the briefing and the subsequent gameplay in the same stage.
+         const auto stage=frame.dcCamera.story_stage;
+         const auto now=frame.dcCamera.native_seconds;
+         const auto route=frame.dcCamera.story_route;
+@@ -3072,15 +3074,18 @@
+         if(stage!=0xffff&&stageKey!=tracedStage){
+             tracedStage=stageKey;
+             blockedSince=-1;
+-            reportedStageBlock=false;
++            lastStageReport=-1;
++            stageReports=0;
+         }
+-        const bool stageBlocked=stage!=0xffff&&!reportedStageBlock&&
++        const bool stageBlocked=stage!=0xffff&&stageReports<4&&
+             (!result.lens.valid||!has_world_geometry(frame));
+         if(!stageBlocked)blockedSince=-1;
+         else if(blockedSince<0)blockedSince=now;
+-        const bool persistentStageBlock=blockedSince>=0&&now-blockedSince>=.6;
++        const bool persistentStageBlock=blockedSince>=0&&now-blockedSince>=.6&&
++            (lastStageReport<0||now-lastStageReport>=5.);
+         if(persistentStageBlock){
+-            reportedStageBlock=true;
++            lastStageReport=now;
++            ++stageReports;
+             NOTICE_LOG(RENDERER,"SS_STORY_STAGE_BLOCK native_s=%.3f seq=%llu scene=%08x stage=%u route=%u lens=%d size=%ux%u world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
+                 now,(unsigned long long)frame.dcCamera.submit_sequence,frame.dcCamera.story_scene,unsigned(stage),unsigned(route),
+                 int(result.lens.valid),unsigned(frame.framebufferWidth),unsigned(frame.framebufferHeight),
+@@ -3102,7 +3107,7 @@
+                 if(normalDetail)++detailReports;
+                 unsigned shown=0;
+                 finalize_decoded_lens(frame,ui,[&](unsigned list,size_t index,u32 a,u32 b,u32 c){
+-                    if(shown++>=96)return;
++                    if(shown++>=(persistentStageBlock?384u:96u))return;
+                     const auto& polygons=list==0?frame.global_param_op:
+                         list==1?frame.global_param_pt:frame.global_param_tr;
+                     const auto& p=polygons[index];

@@ -1,0 +1,23 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1282,7 +1282,7 @@
+ 		target_compile_options(swappy_static PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-vla-cxx-extension>)
+ 		target_compile_definitions(swappy_static PRIVATE ANDROIDGAMESDK_NO_BINARY_DEX_LINKAGE)
+ 	
+-		target_include_directories(${PROJECT_NAME} PRIVATE core/deps/gamesdk/games-frame-pacing/include)
++		target_include_directories(${PROJECT_NAME} PRIVATE core/deps/gamesdk/include)
+ 		target_link_libraries(${PROJECT_NAME} PRIVATE swappy_static)
+ 		target_compile_definitions(${PROJECT_NAME} PRIVATE SWAPPY)
+ 
+--- a/shell/android-studio/flycast/src/main/jni/src/CMakeLists.txt
++++ b/shell/android-studio/flycast/src/main/jni/src/CMakeLists.txt
+@@ -9,5 +9,7 @@
+ 			http_client.h
+ 			i18n.cpp
+ 			jni_util.h
+-			swappygl.cpp
+-			swappyvk.cpp)
++			swappygl.cpp)
++if(USE_VULKAN)
++    target_sources(${PROJECT_NAME} PRIVATE swappyvk.cpp)
++endif()

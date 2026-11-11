@@ -1,0 +1,89 @@
+--- a/core/dreamcast/dc_camera_types.h
++++ b/core/dreamcast/dc_camera_types.h
+@@ -7,6 +7,8 @@
+     uint64_t generation{},submit_sequence{};
+     double native_seconds{};
+     uint32_t ta_address{},destination{};
++    uint32_t story_scene{};
++    uint16_t story_stage{0xffff};
+     bool supported{},is_rtt{},candidates_captured{},code_guard_valid{};
+     bool cache_captured{};
+     float cache_fx{},cache_fy{},cache_cx{},cache_cy{};
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -319,6 +319,16 @@
+     ctx.dcCamera=silentScopeCameraSampler.capture(settings.content.gameId,taAddress,ctx.isRTT,ctx.fb_W_SOF1,sample,
+         [](u32 address){return ReadMem32_nommu(address);});
+     if(ctx.dcCamera.supported)ctx.dcCamera.native_seconds=now;
++#if defined(__ANDROID__) && defined(USE_OPENXR)
++    if(ctx.dcCamera.supported&&!ctx.isRTT&&ReadMem8_nommu(0x8c1b015e)==0){
++        const u32 scene=ReadMem32_nommu(0x8c1b014c);
++        if((scene&0xffffu)==0x0506u&&!(ReadMem32_nommu(0x8c1b088c)&0x4000u)
++            &&ReadMem32_nommu(0x8c26fda8)==0){
++            ctx.dcCamera.story_scene=scene;
++            ctx.dcCamera.story_stage=ReadMem16_nommu(0x8c1b0884);
++        }
++    }
++#endif
+     // Always independent of probe sampling/cadence/environment. This executes on
+     // the SH4 thread before QueueRender and captures no scope RTT main lens.
+     int lensWidth=0,lensHeight=0;
+@@ -3035,15 +3045,44 @@
+     static uint64_t warningGeneration=0;
+     static bool hadWorld=false;
+     static unsigned reports=0, detailReports=0;
++    static uint16_t tracedStage=0xffff;
++    static double blockedSince=-1;
++    static bool reportedStageBlock=false;
+     if(!frame.isRTT){
+         if(warningGeneration!=frame.dcCamera.generation){
+             warningGeneration=frame.dcCamera.generation;
+             hadWorld=false;
+             reports=0;
+             detailReports=0;
++            tracedStage=0xffff;
++            blockedSince=-1;
++            reportedStageBlock=false;
+         }
+-        if(hadWorld&&!result.lens.valid&&reports<16){
+-            ++reports;
++        // A stage can start flat and never acquire a valid world frame.
++        // Take one bounded sample of a sustained rejection per Story stage.
++        const auto stage=frame.dcCamera.story_stage;
++        const auto now=frame.dcCamera.native_seconds;
++        if(stage!=0xffff&&stage!=tracedStage){
++            tracedStage=stage;
++            blockedSince=-1;
++            reportedStageBlock=false;
++        }
++        const bool stageBlocked=stage!=0xffff&&!reportedStageBlock&&
++            (!result.lens.valid||!has_world_geometry(frame));
++        if(!stageBlocked)blockedSince=-1;
++        else if(blockedSince<0)blockedSince=now;
++        const bool persistentStageBlock=blockedSince>=0&&now-blockedSince>=.6;
++        if(persistentStageBlock){
++            reportedStageBlock=true;
++            NOTICE_LOG(RENDERER,"SS_STORY_STAGE_BLOCK native_s=%.3f seq=%llu scene=%08x stage=%u lens=%d size=%ux%u world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
++                now,(unsigned long long)frame.dcCamera.submit_sequence,frame.dcCamera.story_scene,unsigned(stage),
++                int(result.lens.valid),unsigned(frame.framebufferWidth),unsigned(frame.framebufferHeight),
++                (unsigned long long)result.world_triangles,(unsigned long long)result.ui_triangles,
++                (unsigned long long)result.unknown_triangles,(unsigned long long)result.mixed_triangles,
++                int(result.malformed),int(result.unsupported_modifiers));
++        }
++        if(persistentStageBlock||(hadWorld&&!result.lens.valid&&reports<16)){
++            if(!persistentStageBlock)++reports;
+             NOTICE_LOG(RENDERER,"SS_WORLD_DROP native_s=%.3f seq=%llu world=%llu ui=%llu unknown=%llu mixed=%llu malformed=%d modifiers=%d",
+                 frame.dcCamera.native_seconds,(unsigned long long)frame.dcCamera.submit_sequence,
+                 (unsigned long long)result.world_triangles,(unsigned long long)result.ui_triangles,
+@@ -3051,8 +3090,9 @@
+                 int(result.malformed),int(result.unsupported_modifiers));
+             // On a gameplay loss, report the remaining rejected triangles from
+             // this same frame. The common render path still walks the mesh once.
+-            if(result.unknown_triangles&&result.world_triangles>=256&&detailReports<2){
+-                ++detailReports;
++            const bool normalDetail=result.unknown_triangles&&result.world_triangles>=256&&detailReports<2;
++            if((persistentStageBlock&&result.has_problem)||normalDetail){
++                if(normalDetail)++detailReports;
+                 unsigned shown=0;
+                 finalize_decoded_lens(frame,ui,[&](unsigned list,size_t index,u32 a,u32 b,u32 c){
+                     if(shown++>=96)return;

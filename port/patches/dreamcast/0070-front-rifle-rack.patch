@@ -1,0 +1,22 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2740,7 +2740,7 @@
+             magazine==Magazine::EmptyInHand?"Release empty magazine":
+             magazine==Magazine::FreshInHand?"Seat magazine below receiver":
+             ssSimulation.rounds()==0?"Grab empty magazine with offhand trigger":
+-            ssCarry.hold()==ss::RifleCarry::Hold::Chest?"Grip the Simulation rifle at your right hip":
++            ssCarry.hold()==ss::RifleCarry::Hold::Chest?"Grip the Simulation rifle in front on your right":
+             ssSimulation.can_fire()?"Ready":"Free hand trigger: lift, pull, push, lower";
+         char label[100];
+         std::snprintf(label,sizeof(label),"AWP %d/%d   %s",ssSimulation.rounds(),ss::RifleSimulation::Capacity,instruction);
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -562,7 +562,7 @@
+         p.rows.push_back(std::move(r));
+     }
+     p.footer=howToPlayOn()
+-        ?"Grip a hip rifle: Arcade left / Simulation right. Release both grips to return it."
++        ?"Rifles in front: Arcade left / Simulation right. Grip to pick up; release to return."
+         :"Aim and pull trigger | Stick to adjust | B / Y to go back";
+     const auto saveError=silent_scope::dc_persistence::last_error();
+     if(!saveError.empty())p.footer="Settings not saved: "+saveError;

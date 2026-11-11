@@ -1,0 +1,36 @@
+--- a/src/devices/cpu/drcbearm64.cpp
++++ b/src/devices/cpu/drcbearm64.cpp
+@@ -111,6 +111,7 @@
+ ***************************************************************************/
+ 
+ #include "emu.h"
++#include "silent_scope/scene/cache_alignment.h"
+ #include "drcbearm64.h"
+ 
+ #include "drcbeut.h"
+@@ -1756,19 +1757,12 @@
+ 	m_invariant_block = block.invariant();
+ 
+ 	// compute the base by aligning the cache top to a cache line
+-	auto [err, linesize] = osd_get_cache_line_size();
+-	uintptr_t linemask = 63;
+-	if (err)
+-	{
+-		osd_printf_verbose("drcbe_arm64(%s): Error getting cache line size (%s:%d %s), assuming 64 bytes\n", m_device.tag(), err.category().name(), err.value(), err.message());
+-	}
+-	else
+-	{
+-		assert(linesize);
+-		linemask = linesize - 1;
+-		for (unsigned shift = 1; linemask & (linemask + 1); ++shift)
+-			linemask |= linemask >> shift;
+-	}
++	static silent_scope::scene::CacheAlignment alignment;
++	const uintptr_t linemask=alignment.get([this] {
++		auto [error,bytes]=osd_get_cache_line_size();
++		if(error){osd_printf_verbose("drcbe_arm64(%s): cache line query unavailable; using64 bytes once\n",m_device.tag());return size_t(64);}
++		return size_t(bytes);
++	});
+ 	uint8_t *dst = (uint8_t *)(uint64_t(m_cache.top() + linemask) & ~linemask);
+ 
+ 	CodeHolder ch;

@@ -1,0 +1,18 @@
+--- a/src/osd/modules/lib/osdobj_common.cpp
++++ b/src/osd/modules/lib/osdobj_common.cpp
+@@ -9,6 +9,7 @@
+ ***************************************************************************/
+ 
+ #include "osdobj_common.h"
++#include "silent_scope/host_poll.h"
+ 
+ #include "modules/osdwindow.h"
+ #include "modules/debugger/debug_module.h"
+@@ -463,6 +464,7 @@
+ 
+ void osd_common_t::update(bool skip_redraw)
+ {
++	silent_scope::poll_host(machine());
+ 	//
+ 	// This method is called periodically to flush video updates to the
+ 	// screen, and also to allow the OSD a chance to update other systems

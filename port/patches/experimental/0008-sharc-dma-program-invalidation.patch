@@ -1,0 +1,18 @@
+--- a/src/devices/cpu/sharc/sharc.cpp
++++ b/src/devices/cpu/sharc/sharc.cpp
+@@ -317,6 +317,15 @@
+ template <unsigned N>
+ void adsp21062_device::pm_w(offs_t offset, uint64_t data, uint64_t mem_mask)
+ {
++	// DMA and external host writes also replace program SRAM. They bypass
++	// the recompiler's generated PM-write accessor, so invalidate compiled
++	// instructions here as well as at writes issued by the DSP itself.
++	if (m_enable_drc && offset < m_core->m_max_sram_pc[N]
++		&& ((pm_r<N>(offset) ^ data) & mem_mask))
++	{
++		m_core->cache_dirty = 1;
++		m_core->force_recompile = 1;
++	}
+ 	offs_t slot = offset >> 12;
+ 	offs_t base = (offset & 0xfff) + (slot >> 1) * (3<<12);
+ 	if (slot & 1)

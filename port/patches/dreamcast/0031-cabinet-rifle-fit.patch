@@ -1,0 +1,46 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -25,6 +25,7 @@
+ #include "dreamcast/dc_hud_message.h"
+ #include "dreamcast/dc_native_primer.h"
+ #include "dreamcast/rifle_renderer.h"
++#include "dreamcast/dc_rifle_fit.h"
+ #include "dreamcast/rifle_support.h"
+ #include "dreamcast/rifle_smoothing.h"
+ #include "dreamcast/dc_menu_stick.h"
+@@ -2250,7 +2251,7 @@
+     const bool stickQueried=XR_SUCCEEDED(XR(xrGetActionStateVector2f)(session,&stickInfo,&nativeStick));
+     target.ui_navigation=ssNativeMenuStick.update_sample({stickQueried,nativeStick.isActive!=0,
+         nativeStick.currentState.x,nativeStick.currentState.y},target.focused&&target.tracked&&nativeUi,target.hand);
+-    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand});
++    const auto supported=ssSupport.update(hands,{target.focused&&target.tracked&&native3d,false,target.hand,ss::dc_rifle::foregrip});
+     const auto smoothed=ssSmoothing.update(supported.model,{target.host_seconds,target.hand,
+         ss::dc_settings::aim_smoothing_level(),supported.supported,target.focused&&target.tracked&&native3d&&supported.valid});
+     if(smoothed.valid)ssRifleModel=smoothed.model;
+@@ -2283,7 +2284,7 @@
+             ? glm::translate(glm::mat4(1.f),relativePosition(aim[target.hand].pose.position))*
+                 glm::mat4_cast(relativeRotation(aim[target.hand].pose.orientation))
+             : ssRifleModel;
+-        const auto muzzle=glm::vec3(rayModel*glm::vec4(nativeUi?glm::vec3(0):glm::vec3(0,.005f,-.94f),1));
++        const auto muzzle=glm::vec3(rayModel*glm::vec4(nativeUi?glm::vec3(0):ss::dc_rifle::muzzle,1));
+         const auto forward=glm::normalize(glm::vec3(rayModel*glm::vec4(0,0,-1,0)));
+         const float scale=worldScale();
+         if(std::isfinite(scale)&&scale>0){
+@@ -2318,7 +2319,7 @@
+             target.native_point={native.x,native.y,native.z};
+             if(target.point_valid){
+                 auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;
+-                line.pose=glm::translate(rayModel,(nativeUi?glm::vec3(0):glm::vec3(0,.005f,-.94f))-gunMuzzle(line.kind));
++                line.pose=glm::translate(rayModel,(nativeUi?glm::vec3(0):ss::dc_rifle::muzzle)-gunMuzzle(line.kind));
+                 line.aimPoint=muzzle+forward*(dist*scale);line.aimLine=config::VrLaser;
+                 line.aimDot=true;line.now=target.host_seconds;line.menuPointer=target.native_ui;
+                 line.reticleHead=headPose();line.reticlePanelDistance=float(config::VrHudDepth)*scale;
+@@ -3625,7 +3626,7 @@
+     }
+ 	if (!splashVisible)
+ 		updateLightgun(frameState.predictedDisplayTime);
+-	if(silentScope&&ssRifleValid&&!ssRifle){try{SsGlState state;ssRifle=std::make_unique<ss::RifleRenderer>();}catch(const std::exception& e){WARN_LOG(RENDERER,"Silent Scope rifle: %s",e.what());ssRifleValid=false;}}
++	if(silentScope&&ssRifleValid&&!ssRifle){try{SsGlState state;ssRifle=std::make_unique<ss::RifleRenderer>(ss::dc_rifle::mesh());}catch(const std::exception& e){WARN_LOG(RENDERER,"Silent Scope rifle: %s",e.what());ssRifleValid=false;}}
+     retryControllerModels();
+ 	updateControllers(frameState.predictedDisplayTime);
+ 	noteDrawn();

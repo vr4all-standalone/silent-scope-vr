@@ -1,0 +1,68 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -130,6 +130,7 @@
+ ss::RifleSupport ssSupport;
+ ss::dc_xr::FrameRates ssRates;
+ double ssProfileStarted=-1,ssProfileLast=-1;
++uint64_t ssScopeFrames{},ssScopeReady{};
+ glm::mat4 ssRifleModel(1.f);
+ bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{};
+ bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
+@@ -3245,7 +3246,7 @@
+ {
+     ss::dc_view::shutdown_view_runtime();
+     ss::dc_xr::set_input_sink({});ss::dc_mouse::disable_native_mouse();
+-    ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();ssProfileStarted=ssProfileLast=-1;
++    ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();ssProfileStarted=ssProfileLast=-1;ssScopeFrames=ssScopeReady=0;
+     ss::dc_scope::silent_scope_dc_scope_active(false);
+ 	if (instance != XR_NULL_HANDLE)
+ 	{
+@@ -3386,6 +3387,9 @@
+ 	}
+ 	else
+ 		rend_vr_drain(0);
++    // The retained main/scope pair is now stable. Controller picking and both
++    // eye draws must evaluate the same presentation time, even on a slow frame.
++    ss::dc_scope::ScopedRifleDrawAuthorization scopePresentation(false);
+ 	// What the panel says: while that runs, and for a moment when it's done.
+ 	static bool wasPreparing;
+ 	static std::chrono::steady_clock::time_point doneUntil;
+@@ -3529,11 +3533,12 @@
+ 	XrCompositionLayerProjectionView projViews[2] { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW }, { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
+ 	const bool render = frameState.shouldRender && located;
+ 	bool ok = true;
++    const bool drawRifle=silentScope&&focused&&ssRifleValid&&ssRifle&&!menuOpen&&!darkRoom;
++    // One scope freshness decision spans both eyes and the optic/native widget.
++    ss::dc_scope::ScopedRifleDrawAuthorization rifleAuthorization(drawRifle);
+ 	for (int i = 0; render && i < 2; i++)
+ 	{
+ 		EyeChain& c = chains[i];
+-        const bool drawRifle=silentScope&&focused&&ssRifleValid&&ssRifle&&!menuOpen&&!darkRoom;
+-        ss::dc_scope::ScopedRifleDrawAuthorization rifleAuthorization(drawRifle);
+ 		u32 index = 0;
+ 		XrSwapchainImageAcquireInfo acquire { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+ 		XrSwapchainImageWaitInfo wait { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+@@ -3592,7 +3597,8 @@
+ 		if(drawRifle){
+             const auto* main=gles_vr_frame();ss::dc_scope::TextureView scope;
+             if(main)ss::dc_scope::silent_scope_dc_scope_view(main->dcCamera.submit_sequence,main->dcCamera.generation,
+-                reinterpret_cast<uintptr_t>(GraphicsContext::Instance()),ss::dc_scope::monotonic_seconds(),&scope);
++                reinterpret_cast<uintptr_t>(GraphicsContext::Instance()),ss::dc_scope::presentation_seconds(),&scope);
++            if(i==0){++ssScopeFrames;if(scope)++ssScopeReady;}
+             glBindFramebuffer(GL_FRAMEBUFFER,c.fbos[index]);glViewport(0,0,c.width,c.height);
+             drawSilentScope(eyeProjection(views[i].fov)*view,relativePosition(views[i].pose.position),scope);
+         }
+@@ -3706,6 +3712,13 @@
+                     ssRates.xr_hz(),ssRates.native_hz(),int(main&&vr::silentScopeWorldGeometry(*main)),
+                     main?main->dcLens.fx:0.f,int(ssRifleValid),int(menuOpen),
+                     main?main->dcCamera.native_seconds:0.,static_cast<unsigned long long>(main?main->dcCamera.submit_sequence:0));
++                const auto status=ss::dc_scope::gpu_scope().capture_status();
++                NOTICE_LOG(RENDERER,"SS_SCOPE ready=%llu/%llu copies=%llu failures=%llu latest=%llu age_ms=%.1f gl=0x%x",
++                    static_cast<unsigned long long>(ssScopeReady),static_cast<unsigned long long>(ssScopeFrames),
++                    static_cast<unsigned long long>(status.copied),static_cast<unsigned long long>(status.failed),
++                    static_cast<unsigned long long>(status.last_submit),status.last_seconds>=0?(now-status.last_seconds)*1000:-1.,
++                    ss::dc_scope::gpu_scope().last_gl_error());
++                ssScopeFrames=ssScopeReady=0;
+                 ssProfileLast=now;
+             }
+         }

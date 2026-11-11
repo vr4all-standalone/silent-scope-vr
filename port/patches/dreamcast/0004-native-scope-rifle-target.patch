@@ -1,0 +1,12 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -336,6 +336,9 @@
+ endif()
+ 
+ target_include_directories(${PROJECT_NAME} PRIVATE core core/deps core/deps/stb core/deps/json core/deps/asio/asio/include)
++# Silent Scope owned native scope image and accepted procedural rifle.
++target_sources(${PROJECT_NAME} PRIVATE core/dreamcast/dc_scope.cpp core/dreamcast/rifle_renderer.cpp)
++set_source_files_properties(core/dreamcast/rifle_renderer.cpp PROPERTIES COMPILE_DEFINITIONS SILENT_SCOPE_FLYCAST_GL=1)
+ if(LIBRETRO)
+ 	target_include_directories(${PROJECT_NAME} PRIVATE shell/libretro)
+ endif()

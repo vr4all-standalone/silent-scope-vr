@@ -1,0 +1,11 @@
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -101,7 +101,7 @@
+     const double now=double(sh4_sched_now64())/SH4_MAIN_CLOCK;
+     const u32 caller=ctx->pr,mode=ReadMem32_nommu(0x8c1b0114),loaded=ctx->fr_hex(4);
+     const bool guard=codeGuard&&ReadMem32_nommu(FocalSetterProbe::SourceAddress)==loaded;
+-    const auto decision=cameraFocalProbe().evaluate(now,loaded,caller,mode,ctx->fpscr.full,guard);
++    const auto decision=cameraFocalProbe().evaluate(now,loaded,caller,mode,ctx->fpscr.full,guard,ctx->sr.FD);
+     if(decision.eligible){
+         // Replay the known three-instruction setter. Calling OpPtr[RTS] here
+         // would dereference Sh4Interpreter::Instance, which is null in DRC.

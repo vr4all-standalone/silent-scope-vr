@@ -1,0 +1,51 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -171,7 +171,7 @@
+ uint64_t ssScopeFrames{},ssScopeReady{};
+ glm::mat4 ssRifleModel(1.f);
+ ss::RifleRecoil ssRifleRecoil;
+-bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{};
++bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{},ssNativeUiVisible{};
+ bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
+ uint64_t ssNativeGeneration{};
+ XrTime ssSecondarySince{};
+@@ -2003,7 +2003,7 @@
+ void updateControllers(XrTime time)
+ {
+ 	const XrSpaceLocationFlags valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+-	const bool howToPlay = ss::dc_settings::is_silent_scope() ? (menuOpen||menuHowToPlay||!ssRifleValid) : labelsOn() || !config::VrXrGun;
++	const bool howToPlay = ss::dc_settings::is_silent_scope() ? (menuOpen||menuHowToPlay||ssNativeUiVisible) : labelsOn() || !config::VrXrGun;
+ 	int shown = 0;		// the hands that show one: 1 left, 2 right
+ 	for (int hand : { Left, Right })
+ 	{
+@@ -2183,6 +2183,7 @@
+     ss::dc_xr::set_input_sink(ss::dc_mouse::native_mouse_sink());
+     ssRifleValid=false;
+     frameWorldZoom=1.f;
++    ssNativeUiVisible=false;
+     if(menuHowToPlay&&!menuOpen)setHowToPlay(false,"menu closed");
+     for(auto& g:guns) g.visible=false;
+     pointerShown[Left]=pointerShown[Right]=false;
+@@ -2248,6 +2249,14 @@
+     static bool previousMainMenu{};
+     if(mainMenuVerified&&!previousMainMenu)ss::dc_settings::reset_scope_zoom();
+     if(inputDomain!=previousInputDomain||mainMenuVerified!=previousMainMenu){
++        static unsigned introViewReports=0;
++        if(ctx&&introViewReports<64){
++            ++introViewReports;
++            NOTICE_LOG(RENDERER,"SS_VIEW_CHANGE native_s=%.3f seq=%llu domain=%d->%d lens=%d camera=%d geometry=%d framebuffer=%d source_menu=%d proof_menu=%d",
++                ctx->dcCamera.native_seconds,(unsigned long long)ctx->dcCamera.submit_sequence,
++                int(previousInputDomain),int(inputDomain),int(ctx->dcLens.valid),int(gameCamera(*ctx).valid),
++                int(silentScopeWorldGeometry(*ctx)),int(gles_vr_showing_framebuffer()),int(menuSource.kind),int(menuGeometry));
++        }
+         previousInputDomain=inputDomain;previousMainMenu=mainMenuVerified;
+         // Unknown must not masquerade as physical release then replay a held
+         // trigger when World returns. Keep raw trigger hysteresis, rearm bridge.
+@@ -2255,6 +2264,7 @@
+     }
+     const bool native3d=inputDomain==ss::dc_ui::Domain::World;
+     const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
++    ssNativeUiVisible=nativeUi;
+     target.native_ui=nativeUi;target.ui_main_menu=mainMenuVerified;
+     // Cancel old generation/owner state before solving this frame's pose.
+     if(ssPoseHand!=target.hand){resetSilentScopePose();ssPoseHand=target.hand;}

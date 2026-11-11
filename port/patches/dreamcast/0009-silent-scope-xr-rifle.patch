@@ -1,0 +1,405 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -12,6 +12,13 @@
+ 	Copyright 2026 mikermak. This file is part of Flycast and is distributed under the GNU GPL v2 or later.
+ */
+ #include "xr_host.h"
++#include "dreamcast/dc_settings.h"
++#include "dreamcast/dc_xr_bridge.h"
++#include "dreamcast/dc_scope_composite.h"
++#include "dreamcast/rifle_renderer.h"
++#include "dreamcast/rifle_support.h"
++#include <memory>
++#include <cstdio>
+ 
+ #ifdef USE_OPENXR
+ #include "xr_controllers.h"
+@@ -112,6 +119,15 @@
+ PFN_xrRequestDisplayRefreshRateFB requestRefreshRate;
+ PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformanceLevel;
+ 
++namespace ss = silent_scope;
++std::unique_ptr<ss::RifleRenderer> ssRifle;
++ss::RifleSupport ssSupport;
++ss::dc_xr::FrameRates ssRates;
++glm::mat4 ssRifleModel(1.f);
++bool ssRifleValid{},ssHeadTracked{},ssFireWas{},ssSubmittedFireWas{};
++bool ssMenuWas{},ssSecondaryWas{},ssSecondaryArmed{},ssSecondaryConsumed{};
++uint64_t ssNativeGeneration{};
++XrTime ssSecondarySince{};
+ bool initTried;
+ bool sessionRunning;
+ bool focused;
+@@ -895,6 +911,10 @@
+ 				focusLost = std::chrono::steady_clock::now();
+ 			if(!nowFocused)setZoomInputAvailable(false);
+ 			focused = nowFocused;
++            if(ss::dc_settings::is_silent_scope()&&!nowFocused){
++                ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;
++                ssSecondaryArmed=false;ssSecondarySince=0;ss::dc_scope::silent_scope_dc_scope_invalidate();
++            }
+ 			if (nowFocused)
+ 			{
+ 				// the controllers' models, now that the session has its input (a Quest names its
+@@ -984,6 +1004,7 @@
+ 	originPos = center;
+ 	originRot = yawOnly(toQuat(views[0].pose.orientation));
+ 	originSet = true;
++    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;}
+ 	recenterRequested = false;
+ 	NOTICE_LOG(RENDERER, "XR: game camera placed at the head");
+ 	// (the menu's Recenter, or the headset put on again: the menu in front of the head again)
+@@ -1070,7 +1091,7 @@
+ //    which its hit test uses even when its view is widened; in the wider band around
+ //    it: aimOutside.
+ //  - Nothing hit: the point far along the ray.
+-bool aimAtScene(const rend_context& ctx, const glm::vec3& o, const glm::vec3& d, glm::vec2& screen, float& dist)
++bool aimAtScene(const rend_context& ctx, const glm::vec3& o, const glm::vec3& d, glm::vec2& screen, float& dist, glm::vec3* nativeHit = nullptr)
+ {
+ 	aimOutside = false;
+ 	const GameCamera cam = gameCamera(ctx);
+@@ -1205,6 +1226,7 @@
+ 	glm::vec3 hit = o + d * dist;
+ 	const auto nativeXY=zoom::worldXY(hit.x,hit.y,1.f/cam.worldZoom);
+ 	hit.x=nativeXY[0];hit.y=nativeXY[1];
++    if(nativeHit && nearest < Far) *nativeHit=hit;
+ 	if (hit.z > -1e-3f)
+ 		return false;
+ 	// The game tests gun hits with its stock view, not the widened one it draws with. With
+@@ -1876,7 +1898,7 @@
+ void updateControllers(XrTime time)
+ {
+ 	const XrSpaceLocationFlags valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+-	const bool howToPlay = labelsOn() || !config::VrXrGun;
++	const bool howToPlay = ss::dc_settings::is_silent_scope() ? (menuOpen||menuHowToPlay||!ssRifleValid) : labelsOn() || !config::VrXrGun;
+ 	int shown = 0;		// the hands that show one: 1 left, 2 right
+ 	for (int hand : { Left, Right })
+ 	{
+@@ -1942,7 +1964,7 @@
+ 	XrSpaceLocation locations[2];
+ 	bool tracked[2];
+ 	locateHands(time, locations, tracked);
+-	if (config::VrXrGun)
++	if (config::VrXrGun && !ss::dc_settings::is_silent_scope())
+ 	{
+ 		const float none[2] {};
+ 		updateGun(guns[0], time, locations, tracked, none, 0, false, false);
+@@ -1953,7 +1975,7 @@
+ 	static int stickWas;	// 0 at rest, 1 up, 2 down, 3 left, 4 right: pushed past 60%, let go below 40%
+ 	static XrTime repeatAt;	// held left or right: when it steps again (menu::Input::repeat)
+ 	menu::Input input {};
+-	const bool a = boolAction(startAction, Right);
++	const bool a = boolAction(startAction, Right) || (ss::dc_settings::is_silent_scope() && boolAction(startAction, Left));
+ 	input.select = a && !aWas;
+ 	aWas = a;
+ 	const glm::vec2 stick = stickAction2();
+@@ -2044,6 +2066,148 @@
+ 		view.aimOutside = false;
+ 		view.aimPoint = onPanel ? at : ray.origin + ray.dir * 3.f;
+ 	}
++}
++
++
++// Silent Scope console adapter. All world consumers share this one calibrated
++// and optionally stabilized physical model. No generic gun, P2 or slide path.
++void updateSilentScope(XrTime time)
++{
++    ssRifleValid=false;
++    frameWorldZoom=1.f;
++    if(menuHowToPlay&&!menuOpen)setHowToPlay(false,"menu closed");
++    for(auto& g:guns) g.visible=false;
++    pointerShown[Left]=pointerShown[Right]=false;
++    ss::dc_xr::Target target;target.hand=ss::dc_settings::primary_hand();
++    target.focused=focused;target.menu=menuOpen;target.host_seconds=ss::dc_scope::monotonic_seconds();
++    auto release=[&]{ssSupport.reset();ssFireWas=ssSubmittedFireWas=false;ss::dc_xr::input_bridge().submit(target);};
++    if(!focused){ssSecondaryArmed=false;ssSecondarySince=0;release();return;}
++    const XrActiveActionSet active{actionSet,XR_NULL_PATH};
++    XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;
++    if(!XR_SUCCEEDED(XR(xrSyncActions)(session,&sync))){release();return;}
++    const bool menu=boolAction(menuAction),secondary=boolAction(skipAction);
++    bool menuEdge=menu&&!ssMenuWas;ssMenuWas=menu;
++    // B/Y hold is a fallback even when the runtime also exposes Left Menu.
++    if(!secondary){ssSecondaryArmed=true;ssSecondaryConsumed=false;ssSecondarySince=0;}
++    else if(ssSecondaryArmed&&!ssSecondaryConsumed){
++        if(!ssSecondarySince)ssSecondarySince=time;
++        else if(time-ssSecondarySince>=800000000LL){menuEdge=true;ssSecondaryConsumed=true;}
++    }
++    const bool secondaryEdge=secondary&&!ssSecondaryWas;ssSecondaryWas=secondary;
++    if(menuOpen){
++        release();updateMenu(time,menuEdge,secondary,secondaryEdge);return;
++    }
++    if(menuEdge){
++        ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssFireWas=false;
++        menu::open(headPose());target.menu=true;ss::dc_xr::input_bridge().submit(target);return;
++    }
++    const bool center=boolAction(recenterAction);
++    if(center&&!recenterWas)recenter();recenterWas=center;
++    const bool laser=boolAction(laserAction);
++    if(laser&&!laserWas){config::VrLaser.set(!config::VrLaser);config::saveBool("config","vr.Laser",config::VrLaser);}
++    laserWas=laser;
++    XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
++    constexpr auto required=XR_SPACE_LOCATION_POSITION_VALID_BIT|XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|
++        XR_SPACE_LOCATION_POSITION_TRACKED_BIT|XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
++    std::array<ss::RifleSupportHand,2> hands;
++    for(int h:{Left,Right}){
++        tracked[h]=tracked[h]&&(aim[h].locationFlags&required)==required;
++        const auto room=glm::translate(glm::mat4(1),relativePosition(aim[h].pose.position))*glm::mat4_cast(relativeRotation(aim[h].pose.orientation));
++        // Primary: accepted aim orientation with the displayed angle baseline,
++        // translated to the runtime's handle. Offhand: runtime handle position.
++        glm::vec3 palm=HandPalm;XrSpaceLocation grip{XR_TYPE_SPACE_LOCATION};
++        if(XR_SUCCEEDED(XR(xrLocateSpace)(gripSpaces[h],aimSpaces[h],time,&grip)) &&
++           (grip.locationFlags&required)==required && glm::length(toVec(grip.pose.position))<.25f)palm=toVec(grip.pose.position);
++        auto model=glm::translate(room,palm);
++        if(h==target.hand)model=glm::rotate(model,glm::radians(float(gun_angle::displayed(config::VrGunAngle)-10)),glm::vec3(1,0,0));
++        hands[h]={model,tracked[h],floatAction(gripAction,h)>.7f};
++    }
++    target.tracked=ssHeadTracked&&originSet&&tracked[target.hand];
++    const auto supported=ssSupport.update(hands,{target.focused&&ssHeadTracked,false,target.hand});
++    if(supported.valid)ssRifleModel=supported.model;
++    const auto* ctx=gles_vr_frame();
++    if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
++        ssNativeGeneration=ctx->dcCamera.generation;ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssSubmittedFireWas=false;
++    }
++    const bool native3d=ctx && ctx->dcCamera.supported && ctx->dcCamera.code_guard_valid &&
++        !ctx->dcCamera.is_rtt && ctx->dcCamera.submit_sequence && config::VrReproject && !gles_vr_showing_framebuffer();
++    ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&supported.valid&&!menuHowToPlay;
++    const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
++    target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
++    if(target.tracked&&supported.valid&&(ctx||gles_vr_showing_framebuffer())){
++        const auto muzzle=glm::vec3(ssRifleModel*glm::vec4(0,.005f,-.94f,1));
++        const auto forward=glm::normalize(glm::vec3(ssRifleModel*glm::vec4(0,0,-1,0)));
++        const float scale=worldScale();
++        if(std::isfinite(scale)&&scale>0){
++            const glm::vec3 o=glm::vec3(muzzle.x,-muzzle.y,muzzle.z)/scale;
++            const glm::vec3 d=glm::normalize(glm::vec3(forward.x,-forward.y,forward.z));
++            target.native_direction={d.x,d.y,d.z};target.direction_valid=native3d;
++            glm::vec2 screen;float dist=-1;glm::vec3 native(0);
++            bool hit=false;
++            if(!native3d)hit=aimAtFlatScreen(o,d,screen,dist);
++            else hit=aimAtScene(*ctx,o,d,screen,dist,&native);
++            const bool scene=aimHow&&strcmp(aimHow,"3D")==0&&dist>0&&dist<10000;
++            // Flat boot warning/title and actual native overlay panels accept a
++            // separate fresh click. Their plane hit is never a gameplay shot.
++            target.native_ui=!native3d;
++            if(target.native_ui){native=o+d*dist;target.point_valid=hit&&dist>0;target.ui_select=pull;}
++            // Native gameplay HUD never changes the native input domain. If
++            // the generic picker reports a HUD hit, keep only the barrel ray:
++            // no false marker on the HUD, and no loss of legitimate sky shots.
++            else {target.point_valid=scene;target.fire=pull&&native3d;}
++            target.native_point={native.x,native.y,native.z};
++            if(target.point_valid){
++                auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;
++                line.pose=glm::translate(ssRifleModel,glm::vec3(0,.005f,-.94f)-gunMuzzle(line.kind));
++                line.aimPoint=muzzle+forward*(dist*scale);line.aimLine=config::VrLaser;
++                line.aimDot=true;line.now=target.host_seconds;line.menuPointer=target.native_ui;
++                line.reticleHead=headPose();line.reticlePanelDistance=float(config::VrHudDepth)*scale;
++                pointerShown[target.hand]=true;
++            }
++        }
++    }
++    ss::dc_xr::Target emitted;const bool delivered=ss::dc_xr::input_bridge().submit(target,&emitted);
++    // A controller pulse acknowledges a fresh input gesture only. Native hit
++    // confirmation is intentionally not inferred from this submission.
++    if(delivered&&emitted.fire&&!ssSubmittedFireWas)haptic(target.hand,.02f,.5f);
++    ssSubmittedFireWas=emitted.fire;ssFireWas=pull;
++}
++
++// The rifle renderer uses raw GL calls; restore every changed state so Flycast's
++// cached world/UI state still describes the actual driver state afterwards.
++struct SsGlState {
++    GLint program,vao,buffer,active,texture,sampler,depthFunc;
++    GLboolean depth,blend,cull,scissor,stencil,mask,color[4];GLfloat clearDepth;
++    SsGlState(){
++        glGetIntegerv(GL_CURRENT_PROGRAM,&program);glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&vao);glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&buffer);
++        glGetIntegerv(GL_ACTIVE_TEXTURE,&active);glActiveTexture(GL_TEXTURE0);glGetIntegerv(GL_TEXTURE_BINDING_2D,&texture);glGetIntegerv(GL_SAMPLER_BINDING,&sampler);
++        glGetIntegerv(GL_DEPTH_FUNC,&depthFunc);glGetBooleanv(GL_DEPTH_WRITEMASK,&mask);glGetBooleanv(GL_COLOR_WRITEMASK,color);glGetFloatv(GL_DEPTH_CLEAR_VALUE,&clearDepth);
++        depth=glIsEnabled(GL_DEPTH_TEST);blend=glIsEnabled(GL_BLEND);cull=glIsEnabled(GL_CULL_FACE);scissor=glIsEnabled(GL_SCISSOR_TEST);stencil=glIsEnabled(GL_STENCIL_TEST);
++    }
++    ~SsGlState(){
++        glUseProgram(program);glBindVertexArray(vao);glBindBuffer(GL_ARRAY_BUFFER,buffer);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture);glBindSampler(0,sampler);glActiveTexture(active);
++        glDepthFunc(depthFunc);glDepthMask(mask);glColorMask(color[0],color[1],color[2],color[3]);glClearDepthf(clearDepth);
++        auto restore=[](GLenum cap,bool on){if(on)glEnable(cap);else glDisable(cap);};
++        restore(GL_DEPTH_TEST,depth);restore(GL_BLEND,blend);restore(GL_CULL_FACE,cull);restore(GL_SCISSOR_TEST,scissor);restore(GL_STENCIL_TEST,stencil);
++    }
++};
++void drawSilentScope(const glm::mat4& vp,const glm::vec3& eyePos,const ss::dc_scope::TextureView& scope){
++    SsGlState state;
++    glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
++    glClear(GL_DEPTH_BUFFER_BIT);
++    ssRifle->draw_rifle_texture(vp,ssRifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
++}
++void drawSilentScopeInfo(const glm::mat4& vp){
++    if(ss::dc_settings::fps_counter()){
++        char label[128];std::snprintf(label,sizeof(label),"XR %.1f Hz   Native main %.1f Hz",ssRates.xr_hz(),ssRates.native_hz());
++        int w=0,h=0;auto tex=textTexture(label,32,theme::Accent,w,h);
++        if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.45f,-1.5f)),tex,.022f*w/h,.022f);
++    }
++    if(menuHowToPlay){
++        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "B / Y: hold 0.8s for Menu", "Offhand grip near fore-end: Support", "Left Menu: Settings"};
++        for(int n=0;n<5;++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
++            if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.2f-.075f*n,-1.4f)),tex,.025f*w/h,.025f);}
++    }
+ }
+ 
+ // Track physical Start presses even while settings/preparation consume game input.
+@@ -2114,6 +2278,7 @@
+ 
+ void updateLightgun(XrTime time)
+ {
++    if(ss::dc_settings::is_silent_scope()){updateSilentScope(time);return;}
+ 	frameWorldZoom=gameZoomOn()&&!serviceMenuActive()?nativeCameraZoom():1.f;
+ 	for (Gun& g : guns)
+ 		g.visible = false;
+@@ -2806,7 +2971,7 @@
+ 
+ bool serviceMenuAvailable()
+ {
+-    return config::VrXrGun && !config::GGPOEnable && gameStartLoaded();
++    return !ss::dc_settings::is_silent_scope() && config::VrXrGun && !config::GGPOEnable && gameStartLoaded();
+ }
+ 
+ bool serviceMenuActive()
+@@ -2896,6 +3061,7 @@
+ 
+ void recenter()
+ {
++    if(ss::dc_settings::is_silent_scope()){ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssFireWas=true;}
+ 	recenterRequested = true;
+ }
+ 
+@@ -2950,8 +3116,8 @@
+ 	noteHolds(on ? "how to play" : why);
+ }
+ 
+-bool gameZoomOn(){return zoomSession.enabled();}
+-void setGameZoom(bool enabled){zoomSession.set(enabled,zoomSeconds());frameWorldZoom=enabled&&!serviceMenuActive()?nativeCameraZoom():1.f;}
++bool gameZoomOn(){return !ss::dc_settings::is_silent_scope()&&zoomSession.enabled();}
++void setGameZoom(bool enabled){if(ss::dc_settings::is_silent_scope())enabled=false;zoomSession.set(enabled,zoomSeconds());frameWorldZoom=enabled&&!serviceMenuActive()?nativeCameraZoom():1.f;}
+ float gameZoomFactor(){return serviceMenuActive()?1.f:frameWorldZoom;}
+ 
+ bool howToPlayOn()
+@@ -2961,6 +3127,7 @@
+ 
+ Holds holds(int hand)
+ {
++	if (ss::dc_settings::is_silent_scope()) return menuHowToPlay||hand!=ss::dc_settings::primary_hand()?Holds::Controller:Holds::Gun;
+ 	if (menuHowToPlay || (hand != Left && hand != Right))
+ 		return Holds::Controller;
+ 	const bool gun = (dualWield && hand == guns[1].hand) || (p1Armed && hand == guns[0].hand);
+@@ -2979,7 +3146,7 @@
+ 
+ int p1Hand()
+ {
+-	return dualWield ? twoPlayerP1Hand() : Right;
++	return ss::dc_settings::is_silent_scope()?ss::dc_settings::primary_hand():dualWield ? twoPlayerP1Hand() : Right;
+ }
+ 
+ int hapticsLevel()
+@@ -3002,6 +3169,8 @@
+ 
+ void term()
+ {
++    ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssRifleValid=false;ssRifle.reset();ssRates.reset();
++    ss::dc_scope::silent_scope_dc_scope_active(false);
+ 	if (instance != XR_NULL_HANDLE)
+ 	{
+ 		NOTICE_LOG(RENDERER, "XR: render context going away, closing the session");
+@@ -3024,7 +3193,7 @@
+ 		if (XR(xrDestroyInstance) != nullptr)
+ 			XR(xrDestroyInstance)(instance);	// with the actions
+ 		// let go of the guns
+-		if (config::VrXrGun)
++		if (config::VrXrGun && !ss::dc_settings::is_silent_scope())
+ 			for (const Gun& g : guns)
+ 				lightgunSet(g.player, OffScreen, OffScreen, 0);
+ 	}
+@@ -3121,6 +3290,9 @@
+ 	// for the hero's staff, it goes as fast as it can: it waits for each of its frames to be
+ 	// taken, so keep taking them for most of the headset's frame.
+ 	const bool preparing = hands::preparing();
++    const bool silentScope=ss::dc_settings::is_silent_scope();
++    ss::dc_scope::silent_scope_dc_scope_active(silentScope&&config::VrXrGun);
++    if(silentScope&&!focused){ss::dc_scope::silent_scope_dc_scope_invalidate();ss::dc_xr::input_bridge().invalidate();}
+ 	if (menuOpen)
+ 	{
+ 		// Paused by the VR menu: the last frame shown is drawn again, from where the head is now.
+@@ -3265,10 +3437,16 @@
+ 				views[1].fov.angleLeft * deg, views[1].fov.angleRight * deg, views[1].fov.angleUp * deg, views[1].fov.angleDown * deg,
+ 				chains[0].width, chains[0].height, worldScale(), (float)config::ExtraDepthScale);
+ 	}
+-	setZoomInputAvailable(focused&&located&&frameState.shouldRender&&!splashVisible);
++	ssHeadTracked=located&&frameState.shouldRender&&(viewState.viewStateFlags&(XR_VIEW_STATE_POSITION_VALID_BIT|XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_TRACKED_BIT|XR_VIEW_STATE_ORIENTATION_TRACKED_BIT))==
++        (XR_VIEW_STATE_POSITION_VALID_BIT|XR_VIEW_STATE_ORIENTATION_VALID_BIT|XR_VIEW_STATE_POSITION_TRACKED_BIT|XR_VIEW_STATE_ORIENTATION_TRACKED_BIT);
++    setZoomInputAvailable(!silentScope&&focused&&located&&frameState.shouldRender&&!splashVisible);
++    if(silentScope){
++        if(splashVisible){ssRifleValid=false;ss::dc_xr::input_bridge().invalidate();}
++    }
+ 	if (!splashVisible)
+ 		updateLightgun(frameState.predictedDisplayTime);
+-	retryControllerModels();
++	if(silentScope&&ssRifleValid&&!ssRifle){try{SsGlState state;ssRifle=std::make_unique<ss::RifleRenderer>();}catch(const std::exception& e){WARN_LOG(RENDERER,"Silent Scope rifle: %s",e.what());ssRifleValid=false;}}
++    retryControllerModels();
+ 	updateControllers(frameState.predictedDisplayTime);
+ 	noteDrawn();
+ 
+@@ -3278,6 +3456,8 @@
+ 	for (int i = 0; render && i < 2; i++)
+ 	{
+ 		EyeChain& c = chains[i];
++        const bool drawRifle=silentScope&&focused&&ssRifleValid&&ssRifle&&!menuOpen&&!darkRoom;
++        ss::dc_scope::ScopedRifleDrawAuthorization rifleAuthorization(drawRifle);
+ 		u32 index = 0;
+ 		XrSwapchainImageAcquireInfo acquire { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+ 		XrSwapchainImageWaitInfo wait { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+@@ -3333,7 +3513,14 @@
+ 				}
+ 			}
+ 		}
+-		if (menuOpen && !darkRoom)
++		if(drawRifle){
++            const auto* main=gles_vr_frame();ss::dc_scope::TextureView scope;
++            if(main)ss::dc_scope::silent_scope_dc_scope_view(main->dcCamera.submit_sequence,main->dcCamera.generation,
++                reinterpret_cast<uintptr_t>(GraphicsContext::Instance()),ss::dc_scope::monotonic_seconds(),&scope);
++            glBindFramebuffer(GL_FRAMEBUFFER,c.fbos[index]);glViewport(0,0,c.width,c.height);
++            drawSilentScope(eyeProjection(views[i].fov)*view,relativePosition(views[i].pose.position),scope);
++        }
++        if (menuOpen && !darkRoom)
+ 		{
+ 			// the VR menu over the paused game, the guns over it
+ 			glBindFramebuffer(GL_FRAMEBUFFER, c.fbos[index]);
+@@ -3350,7 +3537,7 @@
+ 			glViewport(0, 0, c.width, c.height);
+ 			const glm::mat4 viewProj = eyeProjection(views[i].fov) * view;
+ 			const glm::vec3 eyePos = relativePosition(views[i].pose.position);
+-			bool first = true;
++			bool first = !drawRifle;
+ 			for (const Gun& g : guns)
+ 				if (g.visible)
+ 				{
+@@ -3383,12 +3570,13 @@
+ 					first = false;
+ 				}
+ 			// the how-to-play labels by the buttons of the controllers held, over everything
+-			if (config::VrXrGun && labelsOn())
++			if (!silentScope && config::VrXrGun && labelsOn())
+ 				for (int hand : { Left, Right })
+ 					if (controllerShown[hand] && holds(hand) == Holds::Controller)
+ 						labels::draw(viewProj, hand, controllerGrip[hand], controllerAim[hand], profiles[hand].c_str());
+ 		}
+-		if(focused&&!darkRoom&&!serviceMenuActive()&&zoomSession.notice(zoomSeconds())){
++		if(silentScope&&focused)drawSilentScopeInfo(eyeProjection(views[i].fov)*view);
++        if(!silentScope&&focused&&!darkRoom&&!serviceMenuActive()&&zoomSession.notice(zoomSeconds())){
+ 			int w=0,h=0;
+ 			const auto tex=textTexture(gameZoomOn()?"Zoom enabled":"Zoom disabled",40,theme::Accent,w,h);
+ 			if(tex&&h>0){const float d=1.8f,hy=d*.0225f;
+@@ -3430,6 +3618,10 @@
+ 	endInfo.layerCount = render && ok ? 1 : 0;
+ 	endInfo.layers = layers;
+ 	const bool submitted = XRCHECK(XR(xrEndFrame)(session, &endInfo));
++    if(silentScope){
++        if(submitted&&render&&ok&&focused){const auto* main=gles_vr_frame();ssRates.sample(ss::dc_scope::monotonic_seconds(),main?main->dcCamera.generation:0,main?main->dcCamera.submit_sequence:0);}
++        else ssRates.reset();
++    }
+ 	if (submitted && render && ok && focused && splashVisible)
+ 	{
+ 		launchSplash.presented(std::chrono::nanoseconds(frameState.predictedDisplayPeriod));

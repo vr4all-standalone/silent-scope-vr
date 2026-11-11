@@ -1,0 +1,23 @@
+--- a/core/dreamcast/dc_mouse_native.cpp
++++ b/core/dreamcast/dc_mouse_native.cpp
+@@ -132,6 +132,20 @@
+  auto packet=s.consumer.poll(host_seconds(),feedback);
+  if(generation!=s.generation.load(std::memory_order_acquire)||!s.enabled.load(std::memory_order_acquire))packet={};
+  log_menu(packet,feedback,menu);
++ // Bounded readback for scope/trigger validation on the headset.
++ static double next_game_report{};
++ static unsigned game_reports{}, fire_reports{};
++ const bool report_fire=packet.fresh_fire&&fire_reports<12;
++ const bool report_game=facts.context.scope_branch==1&&game_reports<24&&feedback.native_seconds>=next_game_report;
++ if(report_fire||report_game){
++  NOTICE_LOG(INPUT,"SS_GAME_INPUT native_s=%.3f menu=%u active=%u gain=%u status=%u aim=%.0f,%.0f delta=%d,%d fresh_fire=%u",
++    feedback.native_seconds,unsigned(typed_menu.kind),unsigned(typed_menu.context_active),
++    unsigned(feedback.gain.verified),unsigned(packet.status),feedback.yaw,feedback.pitch,
++    packet.dx,packet.dy,unsigned(packet.fresh_fire));
++  if(report_game){++game_reports;next_game_report=feedback.native_seconds+3;}
++  if(report_fire)++fire_reports;
++ }
++
+ #if defined(_WIN32) && !defined(LIBRETRO) && !defined(USE_OPENXR)
+  dc_menu_pointer_probe::observe_native_packet(packet,feedback,menu);
+ #endif

@@ -1,0 +1,85 @@
+--- a/core/hw/pvr/ta_ctx.h
++++ b/core/hw/pvr/ta_ctx.h
+@@ -322,6 +322,7 @@
+ 	silent_scope::dreamcast::ProjectionRangeLedger<64> dcPacketLens;
+ 	uint64_t dcPacketGeneration{};
+ 	bool dcLensSprite{};
++	silent_scope::dreamcast::SubmittedLens dcSearchlightLens;
+ 	u32 Address;
+ 	u32 lastFrameUsed;
+ 
+@@ -379,7 +380,7 @@
+ 		verify(tad.End() - tad.thd_root <= (ptrdiff_t)TA_DATA_SIZE);
+ 		tad.Clear();
+ 		nextContext = nullptr;
+-		dcLensBuild.reset();dcLensSprite=false;dcPacketLens.reset(0);dcPacketGeneration=0;
++		dcLensBuild.reset();dcLensSprite=false;dcPacketLens.reset(0);dcPacketGeneration=0;dcSearchlightLens={};
+ 		rend.Clear();
+ 	}
+ 
+--- a/core/hw/pvr/ta.cpp
++++ b/core/hw/pvr/ta.cpp
+@@ -512,7 +512,7 @@
+ 	else
+ 		taRenderPass++;
+ 	SetCurrentTARC(TA_OL_BASE);
+-	ta_ctx->dcLensBuild.reset();ta_ctx->dcLensSprite=false;ta_ctx->dcPacketLens.reset(0);ta_ctx->dcPacketGeneration=0;
++	ta_ctx->dcLensBuild.reset();ta_ctx->dcLensSprite=false;ta_ctx->dcPacketLens.reset(0);ta_ctx->dcPacketGeneration=0;ta_ctx->dcSearchlightLens={};
+ 	silentScopeBoundaryFirstData=false;
+ 	silent_scope::dreamcast::probe_lens_boundary(silent_scope::dreamcast::LensBoundary::ListInit,ta_ctx->Address,0,0,continuation);
+ 	ta_tad.ClearPartial();
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -2973,10 +2973,37 @@
+     }
+     return true;
+ }
+-void observe_ta_lens_packet(TA_context* ctx,const void* data,bool,bool,bool,bool)
++// Night Vision's light head and clipped beam use a separate translucent DMA
++// path from the normal command ledger. Stamp their main lens at packet upload.
++// The decoded frame still requires agreement with every other world triangle.
++static SubmittedLens nightSearchlightLens(const void* data)
++{
++    std::array<u32,4> header;
++    std::memcpy(header.data(),data,sizeof(header));
++    if(header[0]!=0x828c0028u||header[1]!=0xc8800000u)return {};
++    const bool lightHead=(header[2]==0x8491a4d2u||header[2]==0x4491a4d2u)&&header[3]==0x500bf800u;
++    const bool lightBeam=(header[2]==0x8491a4dau||header[2]==0x4491a4dau)&&header[3]==0x100bfa00u;
++    if(!lightHead&&!lightBeam)return {};
++    if(ReadMem8_nommu(0x8c1b015e)!=0||ReadMem16_nommu(0x8c1b0884)!=4
++        ||ReadMem32_nommu(0x8c1b014c)!=0x00000506u
++        ||(ReadMem32_nommu(0x8c1b088c)&0x00404000u)!=0
++        ||ReadMem32_nommu(0x8c26fda8)!=0)return {};
++    const auto read=[](u32 address){return ReadMem32_nommu(address);};
++    const float fx=lens_float(read(LensCacheBase)),fy=lens_float(read(LensCacheBase+4));
++    const float cx=lens_float(read(LensCacheBase+8)),cy=lens_float(read(LensCacheBase+12));
++    const LensOwnership upload{true,commandLensGeneration,1,fx,fy,cx,cy};
++    return capture_lens(settings.content.gameId,false,640,480,commandLensGeneration,1,
++        commandLensRequest,upload,read);
++}
++void observe_ta_lens_packet(TA_context* ctx,const void* data,bool vertex,bool,bool reset,bool sprite)
+ {
+     if(!commandLensActive.load(std::memory_order_relaxed))return;
+-    if(ctx->dcPacketGeneration!=commandLensGeneration){ctx->dcPacketGeneration=commandLensGeneration;ctx->dcPacketLens.reset(commandLensGeneration);}
++    if(ctx->dcPacketGeneration!=commandLensGeneration){
++        ctx->dcPacketGeneration=commandLensGeneration;
++        ctx->dcPacketLens.reset(commandLensGeneration);
++        ctx->dcSearchlightLens={};
++    }
++    if(reset)ctx->dcSearchlightLens=sprite?SubmittedLens{}:nightSearchlightLens(data);
+     SubmittedLens owner;const uintptr_t address=reinterpret_cast<uintptr_t>(data),base=reinterpret_cast<uintptr_t>(&mem_b[0]);
+     if(address>=base&&address-base<=RAM_SIZE-32){
+         const u32 begin=u32(address-base);owner=commandLensLedger.lookup(begin,32);
+@@ -3000,6 +3027,12 @@
+             }
+             owner={};
+         }
++    }
++    if(!owner.valid&&vertex&&ctx->dcSearchlightLens.valid){
++        TA_Vertex7 payload;
++        std::memcpy(&payload,static_cast<const u8*>(data)+sizeof(PCW),sizeof(payload));
++        if(std::isfinite(payload.BaseInt)&&payload.xyz[2]>0.f&&payload.xyz[2]<.589f)
++            owner=ctx->dcSearchlightLens;
+     }
+     const ptrdiff_t offset=ta_tad.thd_data-ta_tad.thd_root;
+     if(offset>=0&&offset<=TA_DATA_SIZE-32)ctx->dcPacketLens.append(u32(offset),32,owner);

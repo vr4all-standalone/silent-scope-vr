@@ -1,0 +1,100 @@
+--- a/core/rend/vr/xr_menu.h
++++ b/core/rend/vr/xr_menu.h
+@@ -27,7 +27,7 @@
+ 	// Gun angle, World size and Panel distance step on it (the Gun row loads a model each step)
+ 	bool toggle{}, back{}, select{}, up{}, down{}, left{}, right{}, repeat{};
+     bool perHand{};
+-    struct Hand {bool select{},back{},up{},down{},left{},right{},repeat{};} hand[2];
++    struct Hand {bool select{},back{},up{},down{},left{},right{},repeat{};bool neutral{true};} hand[2];
+ 	struct Ray
+ 	{
+ 		bool valid, click;
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -510,6 +510,7 @@
+ SsPage ssPage=SsPage::Gun;
+ int ssOwner=Right, ssConfirmation=-1;
+ SettingsHit ssFocus,ssHovered;
++bool ssControlsArmed=true;
+ 
+ std::vector<int> ssRows()
+ {
+@@ -622,7 +623,7 @@
+     pointing[0]=pointing[1]=false;
+     const int other=1-ssOwner;
+     const bool transfer=!fresh&&input.ray[other].valid&&input.ray[other].click&&!input.ray[ssOwner].click;
+-    if(transfer){ssOwner=other;ssHovered={};}
++    if(transfer){ssOwner=other;ssHovered={};ssControlsArmed=false;}
+     const auto panel=ssPanel();
+     const auto& ray=input.ray[ssOwner];
+     glm::vec2 uv;
+@@ -635,6 +636,8 @@
+     if(transfer||suppress)return;
+     const auto controls=input.perHand?input.hand[ssOwner]:
+         Input::Hand{input.select,input.back,input.up,input.down,input.left,input.right,input.repeat};
++    if(controls.neutral)ssControlsArmed=true;
++    if(!ssControlsArmed)return;
+     if(controls.back){ssBack();return;}
+     if(!input.perHand&&input.back){ssBack();return;}
+     using Kind=SettingsHit::Kind;
+@@ -691,7 +694,7 @@
+     currentPage=0;
+     if(dc::is_silent_scope()){
+         dc::sanitize_loaded();
+-        ssPage=SsPage::Gun;ssOwner=dc::primary_hand();ssFocus={};ssHovered={};ssConfirmation=-1;
++        ssPage=SsPage::Gun;ssOwner=dc::primary_hand();ssFocus={};ssHovered={};ssConfirmation=-1;ssControlsArmed=true;
+     }
+ 	place(head);
+ 	selected = Resume;
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -160,7 +160,7 @@
+ std::array<bool,2> ssHandBoxVisible{};
+ bool ssSupportLeft=true;
+ bool ssMagazineTracked=false;
+-bool ssScopeZoomArmed{};
++bool ssScopeZoomArmed{},ssAimShortcutArmed{};
+ std::array<ss::GripLatch,2> ssGripLatch;
+ ss::dc_mouse::MenuStickDirection ssNativeMenuStick;
+ ss::dc_menu_controls::Controller ssNativeControls;
+@@ -179,7 +179,7 @@
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
+     ssCarry.reset();ssHandBoxVisible.fill(false);ssManipulationHand=-1;ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
+-    ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
++    ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssAimShortcutArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+ }
+@@ -968,7 +968,7 @@
+ 			focused = nowFocused;
+             if(ss::dc_settings::is_silent_scope()&&!nowFocused){
+                 ss::dc_xr::input_bridge().invalidate();resetSilentScopePose();ssRifleValid=false;ssFireWas=ssSubmittedFireWas=false;
+-                ssSecondaryArmed=false;ssSecondarySince=0;ss::dc_scope::silent_scope_dc_scope_invalidate();
++                ssSecondaryArmed=false;ssSecondarySince=0;ss::dc_scope::silent_scope_dc_scope_invalidate();if(menuOpen)menuFresh=true;
+             }
+ 			if (nowFocused)
+ 			{
+@@ -2147,6 +2147,7 @@
+             if(tracked[hand]&&!select&&!back&&floatAction(triggerAction,hand)<=.35f&&glm::length(axis)<.4f)
+                 armed[hand]=true;
+             auto& controls=input.hand[hand];
++            controls.neutral=!select&&!back&&floatAction(triggerAction,hand)<=.35f&&glm::length(axis)<.4f;
+             controls.select=armed[hand]&&select&&!selectWas[hand];
+             controls.back=armed[hand]&&back&&!backWas[hand];
+             int direction=0;
+@@ -2252,10 +2253,11 @@
+         menu::open(headPose());target.menu=true;ss::dc_xr::input_bridge().submit(target);return;
+     }
+     const bool center=boolAction(target.hand==Right?recenterAction:laserAction);
+-    if(center&&!recenterWas)recenter();recenterWas=center;
+     const bool laser=boolAction(target.hand==Right?laserAction:recenterAction);
+-    if(laser&&!laserWas)ss::dc_settings::toggle_aiming_aids();
+-    laserWas=laser;
++    if(!center&&!laser)ssAimShortcutArmed=true;
++    if(ssAimShortcutArmed&&center&&!recenterWas)recenter();
++    if(ssAimShortcutArmed&&laser&&!laserWas)ss::dc_settings::toggle_aiming_aids();
++    recenterWas=center;laserWas=laser;
+     const bool simulation=ss::dc_settings::simulation_mode();
+     if(simulation!=ssSimulationSelected){
+         ssSimulationSelected=simulation;

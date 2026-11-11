@@ -1,0 +1,113 @@
+diff --git a/core/rend/gles/gltex.cpp b/core/rend/gles/gltex.cpp
+--- a/core/rend/gles/gltex.cpp
++++ b/core/rend/gles/gltex.cpp
+@@ -1,6 +1,9 @@
+ #include "glcache.h"
+ #include "gles.h"
+ #include "hw/pvr/pvr_mem.h"
++#if !defined(GLES2)
++#include "dreamcast/dc_scope_gl.h"
++#endif
+ 
+ #include <memory>
+ 
+@@ -248,6 +251,23 @@
+ 	const u8 fb_packmode = gl.rendContext->fb_W_CTRL.fb_packmode;
+ 	const u32 tex_addr = gl.rendContext->fb_W_SOF1 & VRAM_MASK;
+ 
++#if !defined(GLES2)
++    if (gl.gl_major >= 3 && gl.rtt.framebuffer) {
++        const auto& ctx = *gl.rendContext;
++        const silent_scope::dc_scope::Source source{
++            settings.content.gameId.c_str(), ctx.isRTT, bool(config::RenderToTextureBuffer),
++            w, h, tex_addr, fb_packmode, ctx.fb_W_LINESTRIDE * 8,
++            ctx.fbClip.origin.x, ctx.fbClip.origin.y, ctx.fbClip.size.x, ctx.fbClip.size.y,
++            ctx.dcCamera.submit_sequence, ctx.dcCamera.generation,
++            gl.rtt.framebuffer->getFramebuffer()
++        };
++        // A separate owned GPU image; native RTT/VRAM copy and lens remain untouched.
++        silent_scope::dc_scope::gpu_scope().capture(source,
++            reinterpret_cast<uintptr_t>(GraphicsContext::Instance()),
++            silent_scope::dc_scope::monotonic_seconds());
++    }
++#endif
++
+ #if defined(_WIN32) && !defined(GLES) && !defined(GLES2)
+ 	// Completed native RTT, before its mandatory Silent Scope VRAM copy.
+ 	silentScopeProbeNativeView(silent_scope::dc_probe::PassKind::Rtt, w, h);
+diff --git a/core/rend/gles/gles.cpp b/core/rend/gles/gles.cpp
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -15,6 +15,9 @@
+ #include "oslib/i18n.h"
+ #include "rend/vr_reproject.h"
+ #include "rend/vr/xr_host.h"
++#if !defined(GLES2)
++#include "dreamcast/dc_scope_gl.h"
++#endif
+ 
+ #ifdef TEST_AUTOMATION
+ #include "cfg/cfg.h"
+@@ -26,6 +29,7 @@
+ 
+ #if defined(_WIN32) && !defined(GLES) && !defined(GLES2)
+ #include "dreamcast/native_view_probe.h"
++#include "dreamcast/dc_scope_composite_probe.h"
+ #endif
+ 
+ #ifdef GLES
+@@ -1023,11 +1027,27 @@
+ }
+ #endif
+ 
++#if !defined(GLES2)
++namespace {
++bool silentScopeEventsRegistered = false;
++void silentScopeInvalidateGpu(Event, void*) { silent_scope::dc_scope::gpu_scope().invalidate(); }
++constexpr Event silentScopeGpuEvents[]{Event::Start, Event::LoadState, Event::DiskChange, Event::Terminate};
++}
++#endif
++
+ bool OpenGLRenderer::Init()
+ {
+ 	glcache.EnableCache();
+ 
+ 	gl_create_resources();
++
++#if !defined(GLES2)
++    if (gl.gl_major >= 3 && silent_scope::dc_scope::gpu_scope().initialize(
++            silent_scope::dc_scope::current_gl_api(), reinterpret_cast<uintptr_t>(GraphicsContext::Instance()))) {
++        for (auto event : silentScopeGpuEvents) EventManager::listen(event, silentScopeInvalidateGpu);
++        silentScopeEventsRegistered = true;
++    }
++#endif
+ 
+ #if 0
+ 	glEnable(GL_DEBUG_OUTPUT);
+@@ -1442,6 +1462,11 @@
+ 	// the winding the cull modes were set up for.
+ 	if (vrEye)
+ 		glFrontFace(GL_CW);
++#if defined(_WIN32) && !defined(GLES) && !defined(GLES2)
++    if (!is_rtt && !vrEye)
++        silent_scope::dc_scope::environment_composite_probe().record(settings.content.gameId, *gl.rendContext,
++            silent_scope::dc_scope::monotonic_seconds());
++#endif
+ 	DrawStrips();
+ 	if (vrEye)
+ 		glFrontFace(GL_CCW);
+@@ -1491,6 +1516,14 @@
+ 
+ void OpenGLRenderer::Term()
+ {
++#if !defined(GLES2)
++    if (silentScopeEventsRegistered) {
++        for (auto event : silentScopeGpuEvents) EventManager::unlisten(event, silentScopeInvalidateGpu);
++        silentScopeEventsRegistered = false;
++    }
++    if (!silent_scope::dc_scope::gpu_scope().release(reinterpret_cast<uintptr_t>(GraphicsContext::Instance())))
++        silent_scope::dc_scope::gpu_scope().context_lost();
++#endif
+ 	// the kept frames point into the texture cache, the screen program into this context
+ 	vrFrameValid = false;
+ 	vrShowFramebuffer = false;

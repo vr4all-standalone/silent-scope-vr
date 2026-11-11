@@ -1,0 +1,30 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2185,9 +2185,15 @@
+     ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&supported.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
+-    if(target.tracked&&supported.valid&&inputDomain!=ss::dc_ui::Domain::Unknown){
+-        const auto muzzle=glm::vec3(ssRifleModel*glm::vec4(0,.005f,-.94f,1));
+-        const auto forward=glm::normalize(glm::vec3(ssRifleModel*glm::vec4(0,0,-1,0)));
++    if(target.tracked&&(nativeUi||supported.valid)&&inputDomain!=ss::dc_ui::Domain::Unknown){
++        // Native panels use the tracked controller ray. A rifle-length muzzle
++        // can already be past the panel at ordinary arm's length.
++        const auto rayModel=nativeUi
++            ? glm::translate(glm::mat4(1.f),relativePosition(aim[target.hand].pose.position))*
++                glm::mat4_cast(relativeRotation(aim[target.hand].pose.orientation))
++            : ssRifleModel;
++        const auto muzzle=glm::vec3(rayModel*glm::vec4(nativeUi?glm::vec3(0):glm::vec3(0,.005f,-.94f),1));
++        const auto forward=glm::normalize(glm::vec3(rayModel*glm::vec4(0,0,-1,0)));
+         const float scale=worldScale();
+         if(std::isfinite(scale)&&scale>0){
+             const glm::vec3 o=glm::vec3(muzzle.x,-muzzle.y,muzzle.z)/scale;
+@@ -2208,7 +2214,7 @@
+             target.native_point={native.x,native.y,native.z};
+             if(target.point_valid){
+                 auto& line=pointers[target.hand];line=GunView();line.restMuzzle=muzzle;line.restForward=forward;
+-                line.pose=glm::translate(ssRifleModel,glm::vec3(0,.005f,-.94f)-gunMuzzle(line.kind));
++                line.pose=glm::translate(rayModel,(nativeUi?glm::vec3(0):glm::vec3(0,.005f,-.94f))-gunMuzzle(line.kind));
+                 line.aimPoint=muzzle+forward*(dist*scale);line.aimLine=config::VrLaser;
+                 line.aimDot=true;line.now=target.host_seconds;line.menuPointer=target.native_ui;
+                 line.reticleHead=headPose();line.reticlePanelDistance=float(config::VrHudDepth)*scale;

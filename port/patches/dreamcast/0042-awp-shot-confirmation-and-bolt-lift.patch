@@ -1,0 +1,119 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -146,6 +146,8 @@
+ ss::GripLatch ssManipulationTrigger;
+ bool ssSimulationSelected=false;
+ uint64_t ssSimulationShotSequence{};
++int ssSimulationAmmoBefore=-1;
++bool ssSimulationShotBraced=false;
+ double ssSimulationShotAt=-1;
+ glm::mat4 ssMagazineInHand(1.f);
+ bool ssMagazineTracked=false;
+@@ -167,7 +169,7 @@
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
+-    ssSimulation.release_hand();ssMagazineTracked=false;ssManipulationTrigger.reset();
++    ssSimulation.release_hand();ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2341,12 +2343,42 @@
+     ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&smoothed.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     const auto nativeFireSequence=ss::dc_mouse::native_fire_sequence();
++    int nativeAmmo=-1;
++    if(simulation&&native3d&&ctx){
++        // Native HUD atlas: two triangles per bullet, plus a separate ammo plate.
++        const auto gate=ss::dc_hud::frame_gate("T9507N",*ctx,true,2);
++        bool plate=false;
++        unsigned bullets=0;
++        for(const auto& polygon:ctx->global_param_tr)
++            if(polygon.count&&polygon.tcw.full==0x10047a00&&polygon.tsp.full==0x9491a4dc&&polygon.pcw.full==0x828c002a)
++                plate=true;
++        for(const auto& batch:ctx->sortedTriangles){
++            if(batch.polyIndex>=ctx->global_param_tr.size()||uint64_t(batch.first)+batch.count>ctx->idx.size())continue;
++            const auto& polygon=ctx->global_param_tr[batch.polyIndex];
++            if(polygon.tcw.full!=0x500c7900)continue;
++            for(unsigned i=batch.first;i+2<batch.first+batch.count;i+=3){
++                const auto x=ctx->idx[i],y=ctx->idx[i+1],z=ctx->idx[i+2];
++                if(x>=ctx->verts.size()||y>=ctx->verts.size()||z>=ctx->verts.size())continue;
++                const auto& a=ctx->verts[x];const auto& b=ctx->verts[y];const auto& c=ctx->verts[z];
++                const auto glyph=[](const auto& v){
++                    return (v.u==49.f/128||v.u==63.5f/128)&&(v.v==64.5f/128||v.v==127.f/128);
++                };
++                if(glyph(a)&&glyph(b)&&glyph(c)&&ss::dc_hud::classify(gate,polygon,a,b,c)==ss::dc_hud::Layer::Ammo)
++                    ++bullets;
++            }
++        }
++        if(plate&&bullets<=10&&bullets%2==0)nativeAmmo=int(bullets/2);
++    }
+     if(simulation){
+         if(ssSimulationShotAt>=0){
+-            if(nativeFireSequence!=ssSimulationShotSequence){
++            if(nativeFireSequence!=ssSimulationShotSequence&&nativeAmmo>=0&&nativeAmmo<ssSimulationAmmoBefore){
+                 ssSimulation.fired();
+                 ssSimulationShotAt=-1;
+-            }else if(target.host_seconds-ssSimulationShotAt>.25)ssSimulationShotAt=-1;
++                const bool braced=ssSimulationShotBraced;
++                if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
++                haptic(target.hand,braced?.028f:.038f,1.f);
++                if(braced)haptic(1-target.hand,.024f,.55f);
++            }else if(target.host_seconds-ssSimulationShotAt>.40)ssSimulationShotAt=-1;
+         }
+         const auto& hand=hands[1-target.hand];
+         ssMagazineTracked=native3d&&smoothed.valid&&hand.tracked;
+@@ -2359,7 +2391,10 @@
+             ssMagazineInHand=glm::translate(hand.model,-ss::RifleSimulation::MagazineBase);
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
+     }
+-    const bool gameplayFire=pull&&(!simulation||(!ssFireWas&&ssSimulation.can_fire()&&ssSimulationShotAt<0));
++    const bool gameplayFire=simulation
++        ? (ssSimulationShotAt>=0&&target.host_seconds-ssSimulationShotAt<.12)||
++            (pull&&!ssFireWas&&ssSimulation.can_fire()&&nativeAmmo>0&&ssSimulationShotAt<0)
++        : pull;
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
+     // Preserve the physical level even when the beam misses or its projection
+     // is unavailable; captured valid hits are independently edge-latched.
+@@ -2419,11 +2454,19 @@
+     // confirmation is intentionally not inferred from this submission.
+     if(!ssRifleValid)ssRifleRecoil.reset();
+     if(delivered&&emitted.fire&&!ssSubmittedFireWas){
+-        if(simulation){ssSimulationShotSequence=nativeFireSequence;ssSimulationShotAt=target.host_seconds;}
+         const bool braced=supported.supported;
+-        if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
+-        haptic(target.hand,braced?.028f:.038f,1.f);
+-        if(braced)haptic(1-target.hand,.024f,.55f);
++        if(simulation){
++            if(ssSimulationShotAt<0){
++                ssSimulationShotSequence=nativeFireSequence;
++                ssSimulationAmmoBefore=nativeAmmo;
++                ssSimulationShotBraced=braced;
++                ssSimulationShotAt=target.host_seconds;
++            }
++        }else{
++            if(ssRifleValid)ssRifleRecoil.shot(target.host_seconds,braced);
++            haptic(target.hand,braced?.028f:.038f,1.f);
++            if(braced)haptic(1-target.hand,.024f,.55f);
++        }
+     }
+     ssSubmittedFireWas=emitted.fire;ssFireWas=pull;
+ }
+@@ -2457,7 +2500,7 @@
+     const bool showMagazine=!ssSimulationSelected||inHand||magazine==ss::RifleSimulation::Magazine::Seated;
+     ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+         ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale(),
+-        ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine);
++        ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift());
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;
+@@ -2487,7 +2530,7 @@
+             magazine==Magazine::EmptyInHand?"Release empty magazine":
+             magazine==Magazine::FreshInHand?"Seat magazine below receiver":
+             ssSimulation.rounds()==0?"Grab empty magazine with offhand trigger":
+-            ssSimulation.can_fire()?"Ready":"Offhand trigger: pull bolt back, then forward";
++            ssSimulation.can_fire()?"Ready":"Offhand trigger: lift, pull, push, lower";
+         char label[100];
+         std::snprintf(label,sizeof(label),"AWP %d/%d   %s",ssSimulation.rounds(),ss::RifleSimulation::Capacity,instruction);
+         int w=0,h=0;

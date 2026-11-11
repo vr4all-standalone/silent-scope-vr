@@ -1,0 +1,72 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -15,6 +15,7 @@
+ #include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_xr_bridge.h"
+ #include "dreamcast/dc_scope_composite.h"
++#include "dreamcast/dc_hud.h"
+ #include "dreamcast/rifle_renderer.h"
+ #include "dreamcast/rifle_support.h"
+ #include <memory>
+@@ -1095,6 +1096,14 @@
+ {
+ 	aimOutside = false;
+ 	const GameCamera cam = gameCamera(ctx);
++    // Same immutable frame, signatures, physical plane and XY sizing as GLES.
++    const auto nativeHudGate = silent_scope::dc_hud::frame_gate(settings.content.gameId, ctx,
++        bool(config::VrReproject), 2);
++    const auto nativeHudPlane = silent_scope::dc_hud::placement(worldScale(),
++        silent_scope::dc_hud::actual_wider(ctx), float(config::VrHudSize), silent_scope::dc_settings::panel_distance_metres());
++    bool nativeHudHit = false;
++    silent_scope::dc_hud::Hit nativeHudResult;
++    nativeHudResult.distance = 1e30f;
+ 	const glm::vec3 comfort = comfortParams();
+ 	static std::vector<glm::vec3> pos;
+ 	static std::vector<glm::vec2> overlayNdc;
+@@ -1144,6 +1153,21 @@
+ 		if (a == RestartIndex || b == RestartIndex || c == RestartIndex
+ 				|| a >= kind.size() || b >= kind.size() || c >= kind.size())
+ 			return;
++        if (poly != nullptr && listName[0] == 'T' &&
++                silent_scope::dc_hud::classify(nativeHudGate, *poly, ctx.verts[a], ctx.verts[b], ctx.verts[c])
++                    != silent_scope::dc_hud::Layer::World)
++        {
++            silent_scope::dc_hud::Hit hit;
++            if (silent_scope::dc_hud::hit_triangle(nativeHudGate, *poly, ctx.verts[a], ctx.verts[b], ctx.verts[c],
++                    nativeHudPlane, {o.x,o.y,o.z}, {d.x,d.y,d.z},
++                    silent_scope::dc_hud::NativeTanX, silent_scope::dc_hud::NativeTanY, hit)
++                    && hit.distance < nativeHudResult.distance)
++            {
++                nativeHudHit = true;
++                nativeHudResult = hit;
++            }
++            return;
++        }
+ 		if (kind[a] == Overlay && kind[b] == Overlay && kind[c] == Overlay)
+ 		{
+ 			// skip full-screen fades and backdrops: only buttons and text count
+@@ -1204,6 +1228,10 @@
+ 			for (u32 s = prev.sorted_tr_count; s < pass.sorted_tr_count && s < ctx.sortedTriangles.size(); s++)
+ 			{
+ 				const SortedTriangle& st = ctx.sortedTriangles[s];
++                if (st.polyIndex >= ctx.global_param_tr.size()) continue;
++                listName = "TR";
++                polyIndex = st.polyIndex;
++                poly = &ctx.global_param_tr[st.polyIndex];
+ 				for (u32 j = st.first; j + 2 < st.first + st.count && j + 2 < ctx.idx.size(); j += 3)
+ 					triangle(ctx.idx[j], ctx.idx[j + 1], ctx.idx[j + 2], false, false);
+ 			}
+@@ -1213,6 +1241,13 @@
+ 		prev = pass;
+ 	}
+ 
++    if (nativeHudHit)
++    {
++        screen = glm::vec2(nativeHudResult.x, nativeHudResult.y);
++        dist = nativeHudResult.distance;
++        aimHow = "2D";
++        return onGameScreen(screen);
++    }
+ 	if (onPlane && (overlayHit || !hasScene))
+ 	{
+ 		screen = planeNdc * 0.5f + 0.5f;

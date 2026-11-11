@@ -1,0 +1,53 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -14,6 +14,7 @@
+ #include "xr_host.h"
+ #include "dreamcast/dc_settings.h"
+ #include "dreamcast/dc_xr_bridge.h"
++#include "dreamcast/dc_ui_domain.h"
+ #include "dreamcast/dc_mouse_native.h"
+ #include "dreamcast/dc_scope_composite.h"
+ #include "dreamcast/dc_hud.h"
+@@ -2168,12 +2169,23 @@
+     if(ctx&&ctx->dcCamera.generation!=ssNativeGeneration){
+         ssNativeGeneration=ctx->dcCamera.generation;ss::dc_xr::input_bridge().invalidate();ssSupport.reset();ssSubmittedFireWas=false;
+     }
+-    const bool native3d=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
++    const bool ownedWorld=ctx && gameCamera(*ctx).valid && silentScopeWorldGeometry(*ctx)
+         &&config::VrReproject&&!gles_vr_showing_framebuffer();
++    const auto inputDomain=ss::dc_ui::classify(settings.content.gameId,ctx,ownedWorld);
++    static auto previousInputDomain=ss::dc_ui::Domain::Unknown;
++    if(inputDomain!=previousInputDomain){
++        previousInputDomain=inputDomain;
++        // Unknown must not masquerade as physical release then replay a held
++        // trigger when World returns. Keep raw trigger hysteresis, rearm bridge.
++        ss::dc_xr::input_bridge().invalidate();ssSubmittedFireWas=false;
++    }
++    const bool native3d=inputDomain==ss::dc_ui::Domain::World;
++    const bool nativeUi=inputDomain==ss::dc_ui::Domain::NativeUi;
++    target.native_ui=nativeUi;
+     ssRifleValid=config::VrXrGun&&native3d&&target.tracked&&supported.valid&&!menuHowToPlay;
+     const bool pull=floatAction(triggerAction,target.hand)>(ssFireWas?.35f:.6f);
+     target.start=boolAction(startAction,Left)||boolAction(startAction,Right);
+-    if(target.tracked&&supported.valid&&(ctx||gles_vr_showing_framebuffer())){
++    if(target.tracked&&supported.valid&&inputDomain!=ss::dc_ui::Domain::Unknown){
+         const auto muzzle=glm::vec3(ssRifleModel*glm::vec4(0,.005f,-.94f,1));
+         const auto forward=glm::normalize(glm::vec3(ssRifleModel*glm::vec4(0,0,-1,0)));
+         const float scale=worldScale();
+@@ -2183,12 +2195,11 @@
+             target.native_direction={d.x,d.y,d.z};target.direction_valid=native3d;
+             glm::vec2 screen;float dist=-1;glm::vec3 native(0);
+             bool hit=false;
+-            if(!native3d)hit=aimAtFlatScreen(o,d,screen,dist);
+-            else hit=aimAtScene(*ctx,o,d,screen,dist,&native);
++            if(nativeUi)hit=aimAtFlatScreen(o,d,screen,dist);
++            else if(native3d)hit=aimAtScene(*ctx,o,d,screen,dist,&native);
+             const bool scene=aimHow&&strcmp(aimHow,"3D")==0&&dist>0&&dist<10000;
+-            // Flat boot warning/title and actual native overlay panels accept a
+-            // separate fresh click. Their plane hit is never a gameplay shot.
+-            target.native_ui=!native3d;
++            // Only a verified flat native UI frame permits an unpositioned
++            // confirmation click. Unknown/unowned/Original3D is never UI.
+             if(target.native_ui){native=o+d*dist;target.point_valid=hit&&dist>0;target.ui_select=pull;}
+             // Native gameplay HUD never changes the native input domain. If
+             // the generic picker reports a HUD hit, keep only the barrel ray:

@@ -1,0 +1,99 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -29,6 +29,7 @@
+ #include "dreamcast/rifle_support.h"
+ #include "dreamcast/rifle_smoothing.h"
+ #include "dreamcast/rifle_scope_stability.h"
++#include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_menu_stick.h"
+ #include <memory>
+ #include <cstdio>
+@@ -2266,7 +2267,9 @@
+             const auto eye = glm::vec3(local * glm::vec4(relativePosition(view.pose.position), 1)) - ss::dc_rifle::ocular;
+             aligned |= ss::scope_visibility({eye.x, eye.y, eye.z}, {}).visible;
+         }
+-        ssRifleModel = ssScopeStability.update(smoothed.model, target.host_seconds, aligned, ss::dc_settings::scope_stability_level());
++        ssRifleModel = ssScopeStability.update(smoothed.model, glm::vec3(headPose()[3]), ss::dc_rifle::ocular,
++            {0, ss::dc_rifle::foregrip.height, ss::dc_rifle::foregrip.front},
++            target.host_seconds, aligned, ss::dc_settings::scope_stability_level());
+     } else {
+         ssScopeStability.reset();
+     }
+@@ -2286,6 +2289,7 @@
+         if (ss::dc_settings::change(ss::dc_settings::Setting::ScopeZoom, zoomStick.currentState.y > 0 ? 1 : -1))
+             haptic(Right, .025f, .2f);
+     }
++    ss::dreamcast::scope_camera_magnification.store(ss::dc_settings::scope_magnification(), std::memory_order_relaxed);
+     // Bounded real-runtime evidence distinguishes steady lag from repeated
+     // lifecycle seeds. No per-frame log or gameplay target is inferred.
+     static double aimReportAt=-1;static unsigned aimSamples{},aimRestarts{},aimInvalid{},aimReports{};
+@@ -2387,7 +2391,7 @@
+     SsGlState state;
+     glDisable(GL_SCISSOR_TEST);glDisable(GL_STENCIL_TEST);glDepthMask(GL_TRUE);glDepthFunc(GL_LEQUAL);glClearDepthf(1);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindSampler(0,0);
+     glClear(GL_DEPTH_BUFFER_BIT);
+-    ssRifle->draw_rifle_texture(vp,ssRifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,float(ss::dc_settings::scope_magnification()));
++    ssRifle->draw_rifle_texture(vp,ssRifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0);
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;
+@@ -2411,7 +2415,7 @@
+         if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.45f,-1.5f)),tex,.022f*w/h,.022f);
+     }
+     if(menuHowToPlay){
+-        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Aim smoothing / Scope stability: VR Menu", "Right stick Up / Down: scope zoom", "Left Menu: Settings"};
++        const char* lines[]={"Trigger: Fire / select native screen", "A / X: Start / Pause", "Main menu: Point + Trigger", "B / Y: hold 0.8s for Menu", "Hold offhand Grip near fore-end: Support", "Scope stability: raise rifle to eyepiece", "Right stick Up / Down: scope zoom", "Left Menu: Settings"};
+         for(size_t n=0;n<sizeof(lines)/sizeof(lines[0]);++n){int w=0,h=0;auto tex=textTexture(lines[n],32,theme::Accent,w,h);
+             if(tex&&h>0)drawTexture(vp,glm::translate(headPose(),glm::vec3(0,.2f-.075f*n,-1.4f)),tex,.025f*w/h,.025f);}
+     }
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -15,6 +15,7 @@
+ #include "hw/sh4/sh4_sched.h"
+ #include "dreamcast/dc_camera_probe.h"
+ #include "dreamcast/dc_camera_focal_probe.h"
++#include "dreamcast/dc_scope_camera.h"
+ #include "dreamcast/dc_camera_geometry_probe.h"
+ #include "dreamcast/dc_lens_boundary_probe.h"
+ #include "dreamcast/dc_projection_probe.h"
+@@ -139,7 +140,20 @@
+     const auto request=vr::silentScopeLensRequestSnapshot();
+     const bool production=production_camera_enabled(request);
+     const auto persistent=decide_main_wider(request,loaded,caller,mode,ctx->fpscr.full,guard,ctx->sr.FD);
+-    const auto decision=production?persistent.store:cameraFocalProbe().evaluate(now,loaded,caller,mode,ctx->fpscr.full,guard,ctx->sr.FD);
++    auto decision=production?persistent.store:cameraFocalProbe().evaluate(now,loaded,caller,mode,ctx->fpscr.full,guard,ctx->sr.FD);
++    float scopeScale = production ? scope_camera_magnification.load(std::memory_order_relaxed) : 1.f;
++    bool scopeRequested = production;
++#if defined(_WIN32) && !defined(USE_OPENXR) && !defined(LIBRETRO)
++    // Controlled comparison on the existing owned native checkpoint.
++    if (cameraFocalProbe().enabled() && std::getenv("SILENT_SCOPE_DC_NATIVE_SCOPE_PROBE")) {
++        scopeRequested = true;
++        scopeScale = now < 46 ? .2f : now < 50 ? 1.f : now < 54 ? 2.f : 5.f;
++    }
++#endif
++    const auto scope = decide_scope_camera(scopeScale,loaded,caller,mode,ctx->fpscr.full,
++        scopeRequested && codeGuard && ReadMem32_nommu(ScopeSourceAddress)==loaded,ctx->sr.FD);
++    if (scope.eligible)
++        decision = scope;
+     if(decision.eligible){
+         // Replay the known three-instruction setter. Calling OpPtr[RTS] here
+         // would dereference Sh4Interpreter::Instance, which is null in DRC.
+@@ -154,7 +168,18 @@
+         }catch(SH4ThrownException& ex){AdjustDelaySlotException(ex);throw;}
+         ctx->pc=returnPc;
+         debugger::subroutineReturn();
+-        if(production){
++        if (scope.eligible) {
++            static float lastScopeScale = 0.f;
++            if (scopeScale != lastScopeScale) {
++                lastScopeScale = scopeScale;
++                const auto actual = ReadMem32_nommu(0x8cd1f9c0);
++                NOTICE_LOG(RENDERER,"SS_SCOPE_CAMERA native_s=%.3f scale=%.2f stock=%08x effective=%08x stored=%08x",
++                    now,scopeScale,loaded,scope.effective_bits,actual);
++                std::fprintf(stderr,"SS_SCOPE_CAMERA native_s=%.3f scale=%.2f stock=%08x effective=%08x stored=%08x\n",
++                    now,scopeScale,loaded,scope.effective_bits,actual);
++            }
++        }
++        if(production && !scope.eligible){
+             const bool stored=ReadMem32_nommu(0x8cd1f9c0)==decision.effective_bits;
+             reportNativeMainWider(stored,stored?persistent.factor:1.f,request.revision);
+         }

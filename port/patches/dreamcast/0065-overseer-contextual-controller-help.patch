@@ -1,0 +1,128 @@
+--- a/core/rend/vr/xr_labels.cpp
++++ b/core/rend/vr/xr_labels.cpp
+@@ -5,6 +5,7 @@
+ */
+ #include "xr_labels.h"
+ #include "dreamcast/dc_settings.h"
++#include <array>
+ #include "xr_controllers.h"
+ #include "xr_host.h"
+ #include "xr_own.h"
+@@ -45,14 +46,42 @@
+ 	const char *profile;
+ 	std::vector<Label> hand[2];	// left, right
+ };
+-const Words SilentScopeRight{"",{
+-    {{controllers::Y,"Y - Hold for settings"},{controllers::Menu,"Menu - Settings"},{controllers::Trigger,"Trigger - Bolt / magazine"},{controllers::Grip,"Grip - Support"}},
+-    {{controllers::B,"B - Start / Pause"},{controllers::A,"A - Focus"},{controllers::Trigger,"Trigger - Fire / Select"},{controllers::Grip,"Grip - Rear hold"},{controllers::Stick,"Stick Up / Down - Scope zoom"}}
+-}};
+-const Words SilentScopeLeft{"",{
+-    {{controllers::Y,"Y - Start / Pause"},{controllers::X,"X - Focus"},{controllers::Menu,"Menu - Settings"},{controllers::Trigger,"Trigger - Fire / Select"},{controllers::Grip,"Grip - Rear hold"},{controllers::Stick,"Stick Up / Down - Scope zoom"}},
+-    {{controllers::B,"B - Hold for settings"},{controllers::Trigger,"Trigger - Bolt / magazine"},{controllers::Grip,"Grip - Support"}}
+-}};
++const Words& silentScopeWords(const char* profile,int primary,bool simulation)
++{
++    static const auto sets=[]{
++        std::array<Words,16> result;
++        const char* profiles[]{"/interaction_profiles/oculus/touch_controller",
++            "/interaction_profiles/valve/index_controller","/interaction_profiles/htc/vive_controller",
++            "/interaction_profiles/microsoft/motion_controller"};
++        for(int kind=0;kind<4;++kind)for(int firing=0;firing<2;++firing)for(int sim=0;sim<2;++sim){
++            auto& words=result[kind*4+firing*2+sim];
++            words.profile=profiles[kind];
++            for(int hand=0;hand<2;++hand){
++                auto& labels=words.hand[hand];
++                if(hand==firing){
++                    labels.push_back({hand==0?controllers::Y:controllers::B,
++                        kind>=2?"Pad click - Start / Pause":kind==0&&hand==0?"Y - Start / Pause":"B - Start / Pause"});
++                    labels.push_back({hand==0?controllers::X:controllers::A,
++                        kind>=2?"Menu - Focus":kind==0&&hand==0?"X - Focus":"A - Focus"});
++                    labels.push_back({controllers::Trigger,"Trigger - Fire / Select"});
++                    if(sim)labels.push_back({controllers::Grip,"Grip - Rear hold"});
++                    if(kind!=2)labels.push_back({controllers::Stick,"Up/Down - Zoom | Click - Laser/crosshair"});
++                }else{
++                    labels.push_back({hand==0?controllers::Y:controllers::B,
++                        kind>=2?"Hold Pad click - Settings":kind==0&&hand==0?"Hold Y - Settings":"Hold B - Settings"});
++                    labels.push_back({controllers::Trigger,sim?"Trigger - Bolt / Magazine":"Trigger - Select"});
++                    labels.push_back({controllers::Grip,sim?"Grip - Front hold":"Grip - Support"});
++                    if(kind!=2)labels.push_back({controllers::Stick,"Click - Recenter"});
++                }
++                if(hand==0)labels.push_back({controllers::Menu,"Menu - Settings"});
++            }
++        }
++        return result;
++    }();
++    int kind=0;
++    for(int n=0;n<4;++n)if(profile&&!std::strcmp(profile,sets[n*4].profile))kind=n;
++    return sets[kind*4+(primary==0?0:1)*2+(simulation?1:0)];
++}
+ const Words Kinds[] {
+ 	{ "/interaction_profiles/oculus/touch_controller", {
+ 		{ { controllers::Y, "Y - P2 Reload" }, { controllers::X, "X - P2 Start" }, { controllers::Menu, "Menu" },
+@@ -111,6 +140,7 @@
+ constexpr float Gap = 0.025f;
+ constexpr float Pitch = 0.021f;
+ constexpr float StickRise = 0.026f;
++constexpr float TriggerGap = 0.037f;
+ constexpr float LineWidth = 0.0012f, Dot = 0.0024f;
+ const glm::vec3 TextColour(0.96f);
+ const glm::vec4 LineColour(0.92f, 0.92f, 0.92f, 0.85f);
+@@ -215,9 +245,11 @@
+ 	auto planeY = [&](const glm::vec3& p) { return glm::dot(p - middle, up); };
+ 	auto room = [&](float x, float y) { return middle + across * x + up * y; };
+ 	const float side = hand == 1 ? 1.f : -1.f;
+-	float outer = 0.f;
+-	for (const glm::vec3& p : at)
++	float outer = 0.f, inner = 0.f;
++	for (const glm::vec3& p : at) {
+ 		outer = std::max(outer, side * planeX(p));
++        inner = std::max(inner, -side * planeX(p));
++    }
+ 	const float columnX = side * (outer + Gap);
+ 
+ 	const bool stacked = std::any_of(list.begin(), list.end(), [](const Label& l) { return l.button == controllers::Stick; });
+@@ -254,7 +286,8 @@
+ 				toOuter ? room(x + alignX * hx + side * hx, y) : to });
+ 	};
+ 	for (size_t k = 0; k < column.size(); k++)
+-		place(column[k], columnX, ys[k], side, room(columnX, ys[k]));
++		if(list[column[k]].button!=controllers::Trigger)
++            place(column[k], columnX, ys[k], side, room(columnX, ys[k]));
+ 	for(size_t i=0;i<list.size();i++)if(list[i].button==controllers::Grip){
+ 		const float x=planeX(at[i])-side*Gap;
+ 		place(i,x,planeY(at[i])-Pitch,-side,room(x,planeY(at[i])-Pitch));
+@@ -269,10 +302,21 @@
+ 			stickX = x;
+ 			stickY = y;
+ 		}
+-	if (stacked)
+-		for (size_t i = 0; i < list.size(); i++)
+-			if (list[i].button == controllers::Trigger)
+-				place(i, stickX, stickY + Pitch, 0.f, glm::vec3(0.f), true);
++    // Opposite the outer face-button column, beside the real trigger anchor.
++    for(size_t i=0;i<list.size();i++)if(list[i].button==controllers::Trigger){
++        const float x=-side*(inner+TriggerGap);
++        float y=planeY(at[i]);
++        int w=0,h=0;textTexture(list[i].text,Px,TextColour,w,h);
++        const float hx=h?Height*.5f*w/h:0.f,centreX=x-side*hx;
++        // The accepted Grip legend also extends inward. Leave its geometry intact
++        // and lift Trigger just enough to keep the two plates distinct.
++        for(const auto& other:layout.placed){
++            const float ox=planeX(other.centre),oy=planeY(other.centre);
++            if(std::abs(centreX-ox)<hx+other.hx+.001f && std::abs(y-oy)<Height+.003f)
++                y=oy+Pitch;
++        }
++        place(i,x,y,-side,room(x,y));
++    }
+ }
+ 
+ // A quad facing `eye` at `centre`, its top towards the room's up.
+@@ -291,7 +335,7 @@
+ 		return;
+ 	const glm::vec3 eye = eyeOf(viewProj);
+ 	const Words& words = silent_scope::dc_settings::is_silent_scope()
+-        ? (silent_scope::dc_settings::primary_hand()==0?SilentScopeLeft:SilentScopeRight)
++        ? silentScopeWords(profile,silent_scope::dc_settings::primary_hand(),silent_scope::dc_settings::simulation_mode())
+         : wordsFor(profile);
+ 	Layout& layout = layouts[hand];
+ 	// where the lines end on the controller drawn (its own model's points move with the aim pose)

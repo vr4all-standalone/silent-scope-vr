@@ -1,0 +1,26 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2583,9 +2583,22 @@
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+         ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(SsAwpScale)),true);
+     }
+-    if(ssSimulationSelected)
++    if(ssSimulationSelected){
+         for(int h:{Left,Right})
+             if(ssHandBoxVisible[h])ssRifle->draw_support_box(vp,ssHandBoxPose[h]);
++        using Hold=ss::RifleCarry::Hold;
++        using Magazine=ss::RifleSimulation::Magazine;
++        const auto hold=ssCarry.hold();
++        if(hold==Hold::Chest||inHand||ssSimulation.holding_bolt())return;
++        if(magazine==Magazine::Missing)
++            ssRifle->draw_support_box(vp,ssSpareMagazineAnchor,true);
++        else if(ssSimulation.rounds()==0)
++            ssRifle->draw_support_box(vp,glm::translate(scaledModel,ss::RifleSimulation::MagazineBase),true);
++        else if(!ssSimulation.can_fire())
++            ssRifle->draw_support_box(vp,glm::translate(scaledModel,ssSimulation.bolt_handle()),true);
++        else if(hold==Hold::Front)
++            ssRifle->draw_support_box(vp,rifleModel,true);
++    }
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

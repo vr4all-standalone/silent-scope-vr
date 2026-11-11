@@ -1,0 +1,35 @@
+--- a/src/devices/video/voodoo.cpp
++++ b/src/devices/video/voodoo.cpp
+@@ -1081,6 +1081,7 @@
+ 
+ void voodoo_1_device::soft_reset()
+ {
++	if (silent_scope::scene::capture_device(tag())) silent_scope::scene::capture_reset_commands(this);
+ 	reset_counters();
+ 	m_reg.write(voodoo_regs::reg_fbiTrianglesOut, 0);
+ 	m_pci_fifo.reset();
+@@ -1461,6 +1462,12 @@
+ 	// if this is non-FIFO command, execute immediately
+ 	if (!regentry.is_fifo())
+ 		return void(regentry.write(*this, chipmask, regnum, data));
++
++	// Stamp the native projection when this command is accepted. FIFO execution
++	// may be delayed until the DSP is already building its next camera.
++	if (silent_scope::scene::capture_device(tag()) &&
++		(regnum == voodoo_regs::reg_triangleCMD || regnum == voodoo_regs::reg_ftriangleCMD))
++		silent_scope::scene::capture_accept_triangle(this);
+ 
+ 	// track swap buffer commands seen
+ 	if (regnum == voodoo_regs::reg_swapbufferCMD)
+@@ -2906,6 +2913,11 @@
+ 
+ s32 voodoo_1_device::triangle()
+ {
++	// Consume exactly once, including commands rejected before rasterization.
++	// Never attach a newer live DSP camera to old queued projected vertices.
++	bool const capture_main=silent_scope::scene::capture_device(tag());
++	auto capture_camera=capture_main?silent_scope::scene::capture_consume_triangle(this):std::nullopt;
++	silent_scope::scene::CameraCommandExecution capture_context(std::move(capture_camera),capture_main);
+ 	auto profile = g_profiler.start(PROFILER_USER2);
+ 
+ 	// allocate polygon information now

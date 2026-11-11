@@ -1,0 +1,58 @@
+--- a/core/rend/vr/xr_menu.cpp
++++ b/core/rend/vr/xr_menu.cpp
+@@ -49,7 +49,7 @@
+     static const std::vector<int> original { Resume, Recenter, Gun, GunAngle, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+         GameZoom, HowToPlay, ServiceMenu, ResetDefaults, Quit };
+-    static const std::vector<int> silentScope { Resume, Recenter, Gun, GunAngle, AimSmoothing, ScopeStability, ScopeZoom, Hand, Reload, TwoPlayers, Laser, Reticle,
++    static const std::vector<int> silentScope { Resume, Recenter, GunAngle, AimSmoothing, ScopeStability, ScopeZoom, Hand, Reload, TwoPlayers, Laser, Reticle,
+         ReticleMinSize, ReticleMaxSize, ReticleShrinkDistance, Haptics, WorldSize, PanelDistance, HudSize, WiderView,
+         HowToPlay, FpsCounter, ResetDefaults, Quit };
+     return dc::is_silent_scope() ? silentScope : original;
+@@ -57,7 +57,6 @@
+ bool ssSetting(int row, dc::Setting& setting)
+ {
+     switch (row) {
+-    case Gun: setting=dc::Setting::RifleMode; return true;
+     case GunSize: setting=dc::Setting::GunSize; return true;
+     case GunAngle: setting=dc::Setting::GunAngle; return true;
+     case Hand: setting=dc::Setting::Hand; return true;
+@@ -516,7 +515,7 @@
+ {
+     if(ssConfirmation>=0)return {Cancel,Confirm};
+     switch(ssPage){
+-    case SsPage::Gun: return {Gun,GunAngle,Laser,Reticle,Haptics,AdvancedGun};
++    case SsPage::Gun: return {GunAngle,Laser,Reticle,Haptics,AdvancedGun};
+     case SsPage::GunAdvanced: return {GunSize,AimSmoothing,ScopeStability,ScopeZoom,ReticleMinSize,ReticleMaxSize,ReticleShrinkDistance};
+     case SsPage::World: return {WiderView,AdvancedWorld};
+     case SsPage::WorldAdvanced: return {WorldSize,HudSize,PanelDistance};
+@@ -547,7 +546,6 @@
+         r.selected=ssFocus.kind==SettingsHit::Kind::Row&&ssFocus.index==int(p.rows.size());
+         r.stepper=stepper(row);r.dim=ssDisabled(row);
+         r.action=row==AdvancedGun||row==AdvancedWorld||row==ResetDefaults||row==Quit||row==Cancel||row==Confirm;
+-        if(row==Gun)r.choices={"Arcade","Simulation"};
+         if(row==Hand)r.choices={"Left","Right"};
+         if(row==Laser){r.choices={"Off","Normal","5x","10x"};r.choice=dc::laser_choice();}
+         if(row==WiderView){r.choices={"Off","On","Fade"};r.choice=dc::wider_view_mode();}
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2685,7 +2685,7 @@
+         casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
+         ssRifle->draw_cartridge(vp,glm::scale(casing,glm::vec3(ssRifleScale)),true);
+     }
+-    if(ssHolstersVisible){
++    if(ssHolstersVisible&&hold==Hold::Chest){
+         const int spare=ssSimulationSelected?0:1;
+         if(ssRifles[spare])ssRifles[spare]->draw_rifle_texture(vp,
+             glm::scale(ssHolsterPose[spare],glm::vec3(ss::dc_settings::rifle_model_scale(spare!=0))),
+@@ -2713,9 +2713,8 @@
+     }
+ }
+ void drawSilentScopeInfo(const glm::mat4& vp){
+-    if(ssHolstersVisible&&!menuOpen&&ssRifleValid){
++    if(ssHolstersVisible&&!menuOpen&&ssRifleValid&&ssCarry.hold()==ss::RifleCarry::Hold::Chest){
+         for(int slot=0;slot<2;++slot){
+-            if(slot==int(ssSimulationSelected)&&ssCarry.hold()!=ss::RifleCarry::Hold::Chest)continue;
+             int w=0,h=0;const auto texture=textTexture(slot?"SIMULATION":"ARCADE",32,theme::Accent,w,h);
+             auto label=glm::mat4_cast(glm::quat_cast(glm::mat3(headPose())));
+             label[3]=ssHolsterPose[slot][3]+glm::vec4(0,.38f,0,0);

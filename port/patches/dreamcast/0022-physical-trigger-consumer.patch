@@ -1,0 +1,65 @@
+--- a/core/dreamcast/dc_mouse_input.cpp
++++ b/core/dreamcast/dc_mouse_input.cpp
+@@ -24,7 +24,7 @@
+ bool aim_ok(const dc_xr::Target& t){const auto& d=t.native_direction;const double n=std::hypot(d.x,d.y,d.z);
+  return finite(t.yaw_units)&&finite(t.pitch_units)&&(point_ok(t)||(t.direction_valid&&finite(n)&&std::abs(n-1)<.001));}
+ bool hint_ok(double gain){return finite(gain)&&std::abs(gain)>=.0001&&std::abs(gain)<=128;}
+-struct Edge {std::uint64_t id{};double at{-1};};
++struct Edge {std::uint64_t id{};double at{-1},yaw{},pitch{};bool aim_valid{};};
+ struct Snapshot {dc_xr::Target target{};bool have{};std::uint64_t reset{};Edge fire,ui,start;};
+ struct Axis {double gain{},residual{};bool learned{};};
+ struct Flight {bool active{};int dx{},dy{};double yaw{},pitch{},last_yaw{},last_pitch{},host{},native{},gx{},gy{};bool trusted_x{},trusted_y{};};
+@@ -75,8 +75,11 @@
+   if(!f.gain.verified||!hint_ok(f.gain.yaw)||!hint_ok(f.gain.pitch)){
+    cancel_aim(s);out.status=Status::UnsupportedGain;out.pressed&=Middle;return out;
+   }
+-  if(!t.fire){pending_at=-1;hold_fire=false;}
+-  if(s.fire.id>seen_fire){seen_fire=s.fire.id;if(t.fire&&now-s.fire.at<=FireQueueSeconds)pending_at=s.fire.at;}
++  if(!t.fire)hold_fire=false;
++  if(s.fire.id>seen_fire){seen_fire=s.fire.id;
++   if(now-s.fire.at<=FireQueueSeconds&&s.fire.aim_valid&&s.fire.yaw>=f.yaw_min&&s.fire.yaw<=f.yaw_max
++      &&s.fire.pitch>=f.pitch_min&&s.fire.pitch<=f.pitch_max)pending_at=s.fire.at;
++  }
+   if(pending_at>=0&&now-pending_at>FireQueueSeconds)pending_at=-1;
+   if(fault){
+    if(!t.fire&&!t.ui_select&&!t.start&&t.host_seconds>fault_host&&now>fault_host&&f.native_seconds>fault_native){
+@@ -121,7 +124,17 @@
+    if(out.dx||out.dy)flight={true,out.dx,out.dy,f.yaw,f.pitch,f.yaw,f.pitch,now,f.native_seconds,out.yaw_gain,out.pitch_gain,x.learned,y.learned};
+   }
+   out.status=flight.active?Status::WaitingAck:Status::Ready;
+-  if(out.aligned&&!flight.active&&t.fire){if(pending_at>=0){hold_fire=true;pending_at=-1;out.fresh_fire=true;}if(hold_fire)out.pressed|=Left;}
++  // Maple receives the actual native mouse button and relative motion. A
++  // moving XR goal need not exactly equal older native feedback to pull the
++  // trigger. All code/device/gain/bounds/fault/lifecycle gates above still apply.
++  // Preserve a fresh tap released between native polls for one unique packet.
++  if(pending_at>=0){
++   // A physical release/repress may also fit between native polls. Deliver Up
++   // first so fresh_fire always describes an actual native Left transition.
++   if(held_native&Left){hold_fire=false;return out;}
++   hold_fire=t.fire;pending_at=-1;out.fresh_fire=true;out.pressed|=Left;
++  }
++  if(hold_fire&&t.fire)out.pressed|=Left;
+   return out;
+  }
+ };
+@@ -134,7 +147,8 @@
+  if(transition){++p.snapshot.reset;p.fire_arm=p.ui_arm=p.start_arm=false;}
+  const bool enabled=base_ok(t);
+  const auto edge=[&](bool button,bool& armed,Edge& e){if(!enabled)armed=false;
+-  else if(!button)armed=true;else if(armed){++e.id;e.at=t.host_seconds;armed=false;}};
++  else if(!button)armed=true;else if(armed){++e.id;e.at=t.host_seconds;e.yaw=t.yaw_units;e.pitch=t.pitch_units;
++   e.aim_valid=aim_ok(t)&&!t.native_ui;armed=false;}};
+  edge(t.fire,p.fire_arm,p.snapshot.fire);edge(t.ui_select,p.ui_arm,p.snapshot.ui);edge(t.start,p.start_arm,p.snapshot.start);
+  p.snapshot.target=t;p.snapshot.have=true;p.previous=t;p.producer_have=true;
+ }
+--- a/core/dreamcast/dc_mouse_input.h
++++ b/core/dreamcast/dc_mouse_input.h
+@@ -24,6 +24,8 @@
+ enum class Status {NoTarget,InvalidContext,StaleTarget,Unreachable,UnsupportedGain,WaitingAck,AckTimeout,Ready,UiClickOnly,DuplicatePoll,ExplicitStart};
+ struct Packet {
+  int dx{},dy{};std::uint8_t pressed{};
++ // fresh_fire acknowledges a fresh native Left packet, not alignment, a hit,
++ // guest ammunition consumption or physical/visual shot confirmation.
+  Status status{Status::NoTarget};bool aligned{},reachable{},fresh_fire{},ui_pointing_unverified{};
+  bool learned_yaw{},learned_pitch{};double yaw_gain{},pitch_gain{};
+ };

@@ -1,0 +1,53 @@
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -143,6 +143,8 @@
+ ss::RifleScopeStability ssScopeStability;
+ ss::RifleSteadyAim ssSteadyAim;
+ ss::RifleSimulation ssSimulation;
++glm::mat4 ssEjectionPose(1.f);
++double ssEjectedAt=-1;
+ ss::GripLatch ssManipulationTrigger;
+ bool ssSimulationSelected=false;
+ uint64_t ssSimulationShotSequence{};
+@@ -169,7 +171,7 @@
+ void resetSilentScopePose(){
+     ssRifleRecoil.reset();
+     ssSteadyAim.reset();
+-    ssSimulation.release_hand();ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
++    ssSimulation.release_hand();ssEjectedAt=-1;ssSimulationShotAt=-1;ssMagazineTracked=false;ssManipulationTrigger.reset();
+     ssSupport.reset();ssSmoothing.reset();ssScopeStability.reset();ssScopeZoomArmed=false;ssNativeMenuStick.reset();ssNativeControls.reset();
+     for(auto& grip:ssGripLatch)grip.reset();
+     ssPoseHand=-1;ssSupported=false;
+@@ -2387,7 +2389,12 @@
+             const auto headRelative=glm::vec3(glm::inverse(headPose())*hand.model[3]);
+             const bool nearBelt=headRelative.y<-.27f&&headRelative.y>-.88f&&
+                 std::abs(headRelative.x)<.48f&&std::abs(headRelative.z)<.45f;
++            const auto previousEjections=ssSimulation.ejections();
+             ssSimulation.update(local,ssManipulationTrigger.update(floatAction(triggerAction,1-target.hand)),true,nearBelt);
++            if(ssSimulation.ejections()!=previousEjections){
++                ssEjectionPose=glm::translate(ssRifleModel,ss::RifleSimulation::EjectionPort);
++                ssEjectedAt=target.host_seconds;
++            }
+             ssMagazineInHand=glm::translate(hand.model,-ss::RifleSimulation::MagazineBase);
+         }else {ssSimulation.release_hand();ssManipulationTrigger.reset();}
+     }
+@@ -2501,6 +2508,19 @@
+     ssRifle->draw_rifle_texture(vp,rifleModel,eyePos,scope.texture,1.f,!scope.content_top_at_v0,
+         ss::dc_settings::scope_image_offset(),ss::dc_settings::scope_image_scale(),
+         ssSimulation.bolt(),inHand?&ssMagazineInHand:nullptr,showMagazine,ssSimulation.lift());
++    if(ssSimulationSelected&&ssSimulation.feeding()){
++        const float rearward=std::min(ssSimulation.bolt()/.065f,1.f);
++        const glm::vec3 feed{.018f*rearward,.071f+.011f*rearward,-.055f+ssSimulation.bolt()};
++        ssRifle->draw_cartridge(vp,glm::translate(rifleModel,feed),false);
++    }
++    const float age=float(ss::dc_scope::monotonic_seconds()-ssEjectedAt);
++    if(ssSimulationSelected&&ssEjectedAt>=0&&age>=0&&age<.65f){
++        const auto launch=glm::mat3(ssEjectionPose)*glm::vec3(1.1f,1.25f,.35f);
++        auto casing=ssEjectionPose;
++        casing[3]+=glm::vec4(launch*age+glm::vec3(0,-4.9f*age*age,0),0);
++        casing=glm::rotate(casing,age*20.f,glm::normalize(glm::vec3(1,1,.35f)));
++        ssRifle->draw_cartridge(vp,casing,true);
++    }
+ }
+ void drawSilentScopeNativeControls(const glm::mat4& vp){
+     if(menuOpen||!focused)return;

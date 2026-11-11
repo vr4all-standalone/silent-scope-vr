@@ -1,0 +1,21 @@
+diff --git a/src/emu/schedule.cpp b/src/emu/schedule.cpp
+index a475fd9b..8835df8e 100644
+--- a/src/emu/schedule.cpp
++++ b/src/emu/schedule.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "emu.h"
+ #include "debugger.h"
++#include "silent_scope/scene/emulation_profile.h"
+ 
+ //**************************************************************************
+ //  DEBUGGING
+@@ -447,6 +448,7 @@ void device_scheduler::timeslice()
+ 					if (exec->m_suspend == 0)
+ 					{
+ 						auto profile = g_profiler.start(exec->m_profiler);
++						silent_scope::scene::EmulationScope native_profile(exec->device().tag());
+ 
+ 						// note that this global variable cycles_stolen can be modified
+ 						// via the call to cpu_execute
+
