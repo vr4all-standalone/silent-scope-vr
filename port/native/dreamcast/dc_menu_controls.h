@@ -54,6 +54,31 @@ public:
    if(!button.enabled)return context();
    auto a=button.action;if(a.kind==K::Training&&a.verb==V::Confirm){a.row=training_row_;a.column=training_column_;}return a;
   }
+  if(selector_panel_&&facts_.kind==K::Options&&facts_.interactive&&facts_.source_context==0&&
+     facts_.page>=0&&facts_.page<6&&facts_.page_count==6){
+   // Original Mouse-profile artwork layout, authorized by the current native
+   // Options controller, never by a mutable value's glyph census.
+   constexpr unsigned rows[]{4,2,3,3,3,0};
+   constexpr float widths[6][4]{{136,160,184,120},{128,128},{80,152,128},{152,112,152},{64,64,112},{}};
+   if(facts_.row_count!=int(rows[facts_.page])||facts_.row<0||facts_.row>facts_.row_count)return context();
+   auto hit=action(V::Focus);
+   constexpr Rect tabs[]{{152,120,256,136},{256,120,376,136},{376,120,488,136},
+                        {152,136,232,152},{232,136,344,152},{344,136,488,152}};
+   for(int page=0;page<6;++page)if(tabs[page].hit(x,y)){hit.page=page;return hit;}
+   const float ay=facts_.row?216+32.f*(facts_.row-1):160;
+   const float left=facts_.row?376.f:192.f,right=facts_.row?512.f:424.f;
+   for(int side=0;side<2;++side)if(Rect{side?right:left,ay,(side?right:left)+24,ay+24}.hit(x,y)){
+    if(!facts_.row){hit.page=(facts_.page+(side?1:5))%6;return hit;}
+    if(!facts_.value_verified)return context();
+    hit.verb=V::Adjust;hit.row=facts_.row;hit.direction=side?1:-1;return hit;
+   }
+   for(unsigned row=0;row<rows[facts_.page];++row){const float y0=216+32.f*row;
+    if(Rect{144,y0,144+widths[facts_.page][row],y0+24}.hit(x,y)||Rect{400,y0,512,y0+24}.hit(x,y)){
+     hit.row=int(row)+1;return hit;
+    }
+   }
+   return context();
+  }
   if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==1&&
      facts_.source_context==dc_menu::StoryRouteContext&&facts_.interactive&&facts_.aim_verified){
    // Tower Building, Air Battle, and Stadium in the stock 640x480 route view.

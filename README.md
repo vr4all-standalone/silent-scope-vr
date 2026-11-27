@@ -5,7 +5,7 @@
 # Silent Scope VR
 ### Konami Sniper Action · Standalone Meta Quest
 
-[![Release v0.0.68](https://img.shields.io/badge/Release-v0.0.68-d44c65?style=for-the-badge)](https://github.com/vr4all-standalone/silent-scope-vr/releases/latest)
+[![Release v0.0.71](https://img.shields.io/badge/Release-v0.0.71-d44c65?style=for-the-badge)](https://github.com/vr4all-standalone/silent-scope-vr/releases/latest)
 [![Meta Quest](https://img.shields.io/badge/Headset-Quest_3_%2F_3S-blue?style=for-the-badge)](#installation)
 [![Original game required](https://img.shields.io/badge/Your_Game-Silent_Scope_US_Dreamcast-orange?style=for-the-badge)](#your-game-files)
 
@@ -21,11 +21,15 @@
 
 ---
 
-## First public release
+## Options menu update — v0.0.71
 
 Play the Dreamcast version of **Silent Scope** in stereo VR with a tracked sniper rifle and the game's live scope view inside its eyepiece. Choose an Arcade rifle or an AWP Simulation rifle from the two labelled positions in front of you.
 
-Version **0.0.68** includes the four-picture startup guide, pointer controls for the original game menus, and fixes for flat-view interruptions in the Woods searchlights and Hotel Imperial radio messages.
+Version **0.0.71** fixes the original **Main Menu → Options** controls. Rows, category tabs and adjustment arrows keep working after values change, including Continue’s special setting. Switching categories from lower rows also completes correctly. This update has been confirmed working on Quest 3.
+
+To change a setting, point at its row, then pull Trigger on the game's arrows or the purple **−/+** controls. Point at a category tab and pull Trigger to switch pages.
+
+The four-picture startup guide and the Woods/Hotel stereo fixes from the first public release are included.
 
 ## VR features
 
@@ -104,7 +108,7 @@ The VR settings menu includes handedness, gun angle and size, laser and custom c
 
 ## Verification and known limits
 
-**Experimental release.** The APK is installed and hash-verified on Quest 3S, and startup through the new instruction screen is verified. Earlier builds received hands-on headset feedback on aiming, two-hand support, native scope zoom, reloading, and menu selection.
+**Experimental release.** Version 0.0.71 is installed and hash-verified on Quest 3, and the corrected Options controls have been confirmed working in the headset. The earlier 0.0.68 startup guide was verified on Quest 3S. Earlier builds received hands-on headset feedback on aiming, two-hand support, native scope zoom, reloading, and menu selection.
 
 Windows native replays covered the Story stages, both Night Vision routes, all three Time Attack entries, Indoor, and all nine Outdoor Shooting Range stages. The Woods and Hotel interruptions found during that audit were corrected. Brief flat frames can still appear during loading, view-setting changes, or unrecognized native geometry.
 

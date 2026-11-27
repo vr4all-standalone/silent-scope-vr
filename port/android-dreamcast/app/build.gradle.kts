@@ -7,7 +7,7 @@ android {
     compileSdk { version = release(36) { minorApiLevel = 1 } }
     defaultConfig {
         applicationId = "com.vrlightgunhub.silentscope"
-        minSdk = 29; targetSdk = 36; versionCode = 70
+        minSdk = 29; targetSdk = 36; versionCode = 73
         versionName = rootProject.file("../VERSION").readText().trim()
         ndk { abiFilters += "arm64-v8a" }
     }

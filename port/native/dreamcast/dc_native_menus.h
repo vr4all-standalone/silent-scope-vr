@@ -13,6 +13,7 @@ struct Rect{float x0{},y0{},x1{},y1{};bool contains(float x,float y)const{return
 class NativeMenusProof {
  const void* frame_{};uint64_t generation_{},submission_{};ProvenMenu kind_{ProvenMenu::None};int location_{-1},mode_{-1},page_{-1};
  std::array<Rect,6> option_labels_{},option_values_{};unsigned option_rows_{};
+ std::array<Rect,2> option_arrows_{};int option_focus_{};
  std::array<Rect,2> ranking_arrows_{};ModeSelectProof mode_select_{};
  template<class C>static auto no_modifiers(const C& c,int)->decltype(c.modtrig.empty()){return c.modtrig.empty();}
  template<class C>static bool no_modifiers(const C&,long){return true;}
@@ -201,9 +202,12 @@ class NativeMenusProof {
  // bands. Values below enumerate the primary tables0a406c/4198/41c0/41fc and
  //0ee824/834 plus the actual014 record limits, so a legitimate adjustment does
  // not destroy the displayed-page proof by changing its value glyph.
- template<class C,class P>static bool option_value(const C& c,const P& p,unsigned page,unsigned row){
+ template<class C,class P>static bool option_value(const C& c,const P& p,unsigned page,unsigned row,bool selected=false){
   const float y=216+32.f*row;
-  const auto sprite=[&](uint32_t atlas,unsigned u,unsigned v,unsigned w){return material(p,atlas)&&quad(c,p,456-w*.5f,y,float(w),24,.1f,u/256.f,v/256.f,w/256.f,3.f/32,0,255,0,-1);};
+  if(p.first>=c.verts.size())return false;
+  // The selected value stays green, with a short white flash after adjustment.
+  const auto& color=c.verts[p.first].col;const unsigned rb=selected&&color[0]==255&&color[2]==255?255:0;
+  const auto sprite=[&](uint32_t atlas,unsigned u,unsigned v,unsigned w){return material(p,atlas)&&quad(c,p,456-w*.5f,y,float(w),24,.1f,u/256.f,v/256.f,w/256.f,3.f/32,rb,255,rb,selected?255:127);};
   const auto number=[&](unsigned low,unsigned high){for(unsigned n=low;n<=high;++n)if(sprite(0x40062358,n*16,0,16))return true;return false;};
   const auto boolean=[&]{return sprite(0x40062358,192,0,64)||sprite(0x40062358,160,0,32);};
   if(page==0){if(row==0)return number(1,8);if(row==1)return number(1,4);if(row==2)return boolean();return number(0,5);}
@@ -216,7 +220,11 @@ class NativeMenusProof {
   return page==4&&row==2&&boolean();
  }
  template<class C>bool option_page(const C& c,unsigned page){
-  const auto& ps=c.global_param_tr;const auto count=ps.size();unsigned n=0;
+  const auto& ps=c.global_param_tr;const auto count=ps.size();unsigned n=0;option_focus_=0;
+  // Quest's native Options frame may begin with this black half-alpha canvas
+  // quad. Its untextured TCW is unused. Keep the entire artwork/topology proof
+  // below; accepting this exact prefix must not turn other overlays into UI.
+  if(count&&material(ps[0],0,false)&&quad(c,ps[0],0,0,640,480,1,0,0,0,0,0,0,0,127))++n;
   const auto sprite=[&](float x,float y,float w,float h,float q,unsigned u,unsigned v,unsigned uw,unsigned vh,uint32_t atlas,int alpha=255){
    if(n>=count||!material(ps[n],atlas)||!quad(c,ps[n],x,y,w,h,q,u/256.f,v/256.f,uw/256.f,vh/256.f,255,255,255,alpha))return false;
    ++n;return true;};
@@ -225,7 +233,8 @@ class NativeMenusProof {
   if(page!=5&&!sprite(224,416,192,32,1.f/30,0,216,192,32,0x40055158))return false;
   if(!sprite(144,120,256,72,.05f,0,96,256,72,0x40053f58)||!sprite(400,120,96,72,.05f,0,168,96,72,0x40053f58))return false;
   constexpr unsigned title_x[]{240,232,240,256,240,208},title_w[]{160,176,160,144,160,224},title_v[]{0,24,48,120,72,96};
-  if(!sprite(float(title_x[page]),160,float(title_w[page]),24,.1f,0,title_v[page],title_w[page],24,0x40054858))return false;
+  if(!sprite(float(title_x[page]),160,float(title_w[page]),24,.1f,0,title_v[page],title_w[page],24,0x40054858,-1))return false;
+  const unsigned heading_alpha=c.verts[ps[n-1].first].col[3];
   constexpr unsigned top[6][8]{{152,120,104,0,0,104,0,0},{256,120,120,0,16,120,0,0},{376,120,112,0,32,112,0,0},
    {152,136,80,144,64,0,16,0},{232,136,112,0,48,112,0,0},{344,136,144,0,64,0,16,0}};
   for(unsigned i=0;i<6;++i){const auto& t=top[i];if(!sprite(float(t[0]),float(t[1]),float(t[2]),16,.1f,t[3]+(page==i?t[5]:0),t[4]+(page==i?t[6]:0),t[2],16,0x40053f58))return false;}
@@ -239,7 +248,10 @@ class NativeMenusProof {
    {{152,0,216,0x40061a58},{112,0,168,0x40054858},{152,0,192,0x40054858},{0,0,0,0}},
    {{64,0,192,0x40061a58},{64,64,192,0x40061a58},{112,128,192,0x40061a58},{0,0,0,0}}};
   for(unsigned r=0;r<row_count;++r){const auto& q=labels[page][r];if(!sprite(144,216+32.f*r,float(q[0]),24,.1f,q[1],q[2],q[0],24,q[3],-1))return false;
+   const auto alpha=c.verts[ps[n-1].first].col[3];
+   if(alpha==255){if(option_focus_)return false;option_focus_=int(r)+1;}else if(alpha!=127)return false;
    option_labels_[r]={144,216+32.f*r,144+float(q[0]),240+32.f*r};}
+  if(heading_alpha!=(option_focus_?127u:255u))return false;
   if(page==5){
    if(n>=count||!material(ps[n],0,false,0x9491a4f5)||!quad(c,ps[n],32,216,576,192,.2f,0,0,0,0,0,0,0))return false;
    ++n;
@@ -248,7 +260,7 @@ class NativeMenusProof {
   }
   for(unsigned empty=6;empty>row_count;--empty){const float y=216+32.f*(empty-1);
    if(!sprite(96,y,256,24,.1f,0,168,256,24,0x40062358)||!sprite(352,y,192,24,.1f,0,192,192,24,0x40062358))return false;}
-  for(unsigned r=0;r<row_count;++r){if(page==4&&r<2)continue;if(n>=count||!option_value(c,ps[n],page,r))return false;
+  for(unsigned r=0;r<row_count;++r){if(page==4&&r<2)continue;if(n>=count||!option_value(c,ps[n],page,r,option_focus_==int(r)+1))return false;
    const auto& a=c.verts[ps[n].first];const auto& b=c.verts[ps[n].first+3];option_values_[r]={a.x,a.y,b.x,b.y};++n;}
   if(page==5){
    if(n+2>count||!material(ps[n],0,false)||!quad(c,ps[n],110,374,428,84,.5f,0,0,0,0,0,0,0,224))return false;
@@ -256,7 +268,10 @@ class NativeMenusProof {
    if(!material(ps[n],0,false)||!quad(c,ps[n],108,372,432,88,.49751242995262146f,0,0,0,0))return false;
    ++n;
   }
-  if(!sprite(192,160,24,24,.1f,160,0,24,24,0x40054858,-1)||!sprite(424,160,24,24,.1f,184,0,24,24,0x40054858,-1))return false;
+  const float arrow_y=option_focus_?216+32.f*(option_focus_-1):160;
+  const float arrow_left=option_focus_?376.f:192.f,arrow_right=option_focus_?512.f:424.f;
+  if(!sprite(arrow_left,arrow_y,24,24,.1f,160,0,24,24,0x40054858,-1)||!sprite(arrow_right,arrow_y,24,24,.1f,184,0,24,24,0x40054858,-1))return false;
+  option_arrows_={Rect{arrow_left,arrow_y,arrow_left+24,arrow_y+24},Rect{arrow_right,arrow_y,arrow_right+24,arrow_y+24}};
   if(page==5){unsigned row=0,column=0;constexpr std::string_view hint="Adjust the brightness on your TV\nso that you will not see the\npicture on the far right.";
    for(char ch:hint){if(ch=='\n'){++row;column=0;continue;}if(n>=count||glyph(c,ps[n],0x500c0000,12,24,1.f/16)!=ch||c.verts[ps[n].first].x!=120+12.f*column||c.verts[ps[n].first].y!=380+24.f*row)return false;++n;++column;}
   }
@@ -335,8 +350,11 @@ class NativeMenusProof {
    if(Rect{450,320,480,340}.contains(x,y)){action.row=0;return action;}
    if(Rect{450,340,470,360}.contains(x,y)){action.row=1;return action;}}
   if(kind_==ProvenMenu::Options){action.verb=dc_menu::MenuVerb::Focus;action.from_page=page_;
-   if(Rect{192,160,216,184}.contains(x,y)){action.page=(page_+5)%6;return action;}
-   if(Rect{424,160,448,184}.contains(x,y)){action.page=(page_+1)%6;return action;}
+   for(unsigned side=0;side<2;++side)if(option_arrows_[side].contains(x,y)){
+    if(option_focus_){action.verb=dc_menu::MenuVerb::Adjust;action.row=option_focus_;action.page=page_;action.direction=side?1:-1;}
+    else action.page=(page_+(side?1:5))%6;
+    return action;
+   }
    constexpr Rect top[]{{152,120,256,136},{256,120,376,136},{376,120,488,136},{152,136,232,152},{232,136,344,152},{344,136,488,152}};
    for(unsigned i=0;i<6;++i)if(top[i].contains(x,y)){action.page=int(i);return action;}
    for(unsigned r=0;r<option_rows_;++r)if(option_labels_[r].contains(x,y)||option_values_[r].contains(x,y)){action.row=int(r)+1;return action;}}

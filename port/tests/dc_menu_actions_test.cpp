@@ -66,6 +66,16 @@ int main(){
  v.fresh_click=false;v.facts.page=2;v.host_seconds=v.native_seconds=1.04;o=pages.poll(v);assert(o.mouse_x==16);
  v.facts.page=3;v.host_seconds=v.native_seconds=1.08;o=pages.poll(v);assert(o.mouse_x==0&&o.status==PolicyStatus::Ready);
  v.hover.page=4;v.hover.from_page=3;v.host_seconds=v.native_seconds=1.10;o=pages.poll(v);assert(o.mouse_x==0); // held trigger does not click the next arrow
+ // A category click from row four needs four acknowledged wheel steps before
+ // its horizontal pulse. Real Options row transitions take about 140 ms each.
+ Policy deepPage;auto deep=sample(f);deep.facts.page=0;deep.facts.row=4;deepPage.poll(deep);
+ deep.clicked=action(MenuKind::Options,MenuVerb::Focus);deep.clicked.from_page=0;deep.clicked.page=1;
+ deep.fresh_click=deep.trigger_down=true;deep.click_host_seconds=1;auto d=deepPage.poll(deep);assert(d.wheel==-1);
+ deep.fresh_click=false;
+ for(int row=3;row>=0;--row){deep.facts.row=row;deep.host_seconds=deep.native_seconds=1+.14*(4-row);d=deepPage.poll(deep);
+  if(row)assert(d.wheel==-1);else assert(d.mouse_x==16);
+ }
+ deep.facts.page=1;deep.host_seconds=deep.native_seconds=1.7;d=deepPage.poll(deep);assert(d.status==PolicyStatus::Ready);
  Policy ranking;MenuFacts rf;rf.kind=MenuKind::Ranking;rf.verified=rf.interactive=true;rf.context_revision=7;rf.page_count=14;rf.page=0;rf.next_page=4;rf.previous_page=13;rf.back_button=NativeRight;
  auto z=sample(rf);ranking.poll(z);z.clicked=action(MenuKind::Ranking,MenuVerb::Adjust);z.clicked.page=z.clicked.from_page=0;z.clicked.direction=1;z.fresh_click=z.trigger_down=true;z.click_host_seconds=1;
  o=ranking.poll(z);assert(o.mouse_x==16);z.fresh_click=false;z.facts.page=4;z.host_seconds=z.native_seconds=1.05;o=ranking.poll(z);assert(o.mouse_x==0&&o.buttons==0);

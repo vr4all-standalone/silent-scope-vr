@@ -1,8 +1,13 @@
 # Silent Scope VR development
 
-The current public release being prepared is **0.0.68**. Current installation,
-controls and release information are in [the project page](docs/github/README.md).
+The current public release is [**0.0.71**](https://github.com/vr4all-standalone/silent-scope-vr/releases/tag/v0.0.71). Current installation,
+controls and release information are on [the public project page](https://github.com/vr4all-standalone/silent-scope-vr).
 The development notes below preserve earlier milestones and their controls.
+
+The **0.0.71** Quest update keeps original Options controls active across
+value changes and fixes category navigation from lower rows.
+Verification and headset status are recorded in
+[the Options release notes](docs/github/RELEASE-v0.0.71.md).
 
 Silent Scope 1 uses the Dreamcast version for the current Quest candidate. The tracked sniper rifle displays the game's actual independent scope render inside its physical eyepiece. Arcade and manual bolt/magazine Simulation are implemented. Silent Scope 2 remains later work.
 

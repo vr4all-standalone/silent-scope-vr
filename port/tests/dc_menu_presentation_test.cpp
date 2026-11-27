@@ -31,7 +31,18 @@ int main() {
     assert(!selector_panel(source,true,30.25));
     source.mode_type=1;
     assert(!selector_panel(source,true,30.00));
-    source.source_context=StoryRouteContext;
+    source.kind=MenuKind::Options;source.source_context=0;source.page_count=6;source.page=0;
+    source.row_count=4;source.row=4;source.value=5;source.interactive=true;
+    assert(options_panel(source,true,30.00));
+    for(unsigned i=0;i<10;++i){auto bad=source;
+        if(i==0)bad.verified=false;if(i==1)bad.context_active=false;if(i==2)bad.interactive=false;
+        if(i==3)bad.context_revision=0;if(i==4)bad.source_context=2;if(i==5)bad.row_count=9;
+        if(i==6)bad.row=5;if(i==7)bad.page=6;if(i==8)bad.native_seconds=31;if(i==9)bad.kind=MenuKind::Dialog;
+        assert(!options_panel(bad,true,30.00));
+    }
+    assert(!options_panel(source,false,30.00));
+    source.page=5;source.row_count=source.row=0;assert(options_panel(source,true,30.00));
+    source.kind=MenuKind::ModeSelect;source.source_context=StoryRouteContext;
     assert(selector_panel(source,true,30.00));
     source.mode_type=6;
     assert(!selector_panel(source,true,30.00));

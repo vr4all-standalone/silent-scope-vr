@@ -1,0 +1,117 @@
+--- a/core/dreamcast/dc_menu_actions.h
++++ b/core/dreamcast/dc_menu_actions.h
+@@ -157,8 +157,12 @@
+   if(!i.trigger_down)release_required_=false;
+   if(!f.context_active){cancel();out.status=PolicyStatus::Inactive;return out;}
+   if(release_required_){out.status=PolicyStatus::Rearm;return out;}
++  // A category click must first walk up from the selected value to the heading.
++  // Each step still has its own 300 ms ACK bound; retain enough overall time
++  // for all four rows plus the requested page change.
++  const double pending_budget=goal_.kind==MenuKind::Options&&goal_.verb==MenuVerb::Focus&&goal_.page!=goal_.from_page?2.:.5;
+   if(!f.interactive){
+-   if((pending_&&i.host_seconds-clicked_at_>.5)||(flight_!=Axis::None&&(i.host_seconds-flight_host_>.3||i.native_seconds-flight_native_>.3))){
++   if((pending_&&i.host_seconds-clicked_at_>pending_budget)||(flight_!=Axis::None&&(i.host_seconds-flight_host_>.3||i.native_seconds-flight_native_>.3))){
+     cancel();release_required_=true;out.status=PolicyStatus::Expired;
+    }else out.status=PolicyStatus::WaitingAck;
+    return out;
+@@ -181,7 +185,7 @@
+       &&i.host_seconds-i.click_host_seconds>=-.02&&i.host_seconds-i.click_host_seconds<=.5){
+    goal_=i.clicked;pending_=true;clicked_at_=i.click_host_seconds;
+   }
+-  if(pending_&&i.host_seconds-clicked_at_>.5){pending_=false;out.status=PolicyStatus::Expired;return out;}
++  if(pending_&&i.host_seconds-clicked_at_>pending_budget){pending_=false;out.status=PolicyStatus::Expired;return out;}
+   const bool hover_page_arrow=i.hover.kind==MenuKind::Options&&i.hover.page!=i.hover.from_page;
+   if(!pending_&&!hover_page_arrow&&bound(i.hover,f))goal_=i.hover;
+   if(flight_!=Axis::None){
+--- a/core/dreamcast/dc_menu_controls.h
++++ b/core/dreamcast/dc_menu_controls.h
+@@ -53,6 +53,31 @@
+   for(const auto& button:buttons_)if(button.bounds.hit(x,y)){
+    if(!button.enabled)return context();
+    auto a=button.action;if(a.kind==K::Training&&a.verb==V::Confirm){a.row=training_row_;a.column=training_column_;}return a;
++  }
++  if(selector_panel_&&facts_.kind==K::Options&&facts_.interactive&&facts_.source_context==0&&
++     facts_.page>=0&&facts_.page<6&&facts_.page_count==6){
++   // Original Mouse-profile artwork layout, authorized by the current native
++   // Options controller, never by a mutable value's glyph census.
++   constexpr unsigned rows[]{4,2,3,3,3,0};
++   constexpr float widths[6][4]{{136,160,184,120},{128,128},{80,152,128},{152,112,152},{64,64,112},{}};
++   if(facts_.row_count!=int(rows[facts_.page])||facts_.row<0||facts_.row>facts_.row_count)return context();
++   auto hit=action(V::Focus);
++   constexpr Rect tabs[]{{152,120,256,136},{256,120,376,136},{376,120,488,136},
++                        {152,136,232,152},{232,136,344,152},{344,136,488,152}};
++   for(int page=0;page<6;++page)if(tabs[page].hit(x,y)){hit.page=page;return hit;}
++   const float ay=facts_.row?216+32.f*(facts_.row-1):160;
++   const float left=facts_.row?376.f:192.f,right=facts_.row?512.f:424.f;
++   for(int side=0;side<2;++side)if(Rect{side?right:left,ay,(side?right:left)+24,ay+24}.hit(x,y)){
++    if(!facts_.row){hit.page=(facts_.page+(side?1:5))%6;return hit;}
++    if(!facts_.value_verified)return context();
++    hit.verb=V::Adjust;hit.row=facts_.row;hit.direction=side?1:-1;return hit;
++   }
++   for(unsigned row=0;row<rows[facts_.page];++row){const float y0=216+32.f*row;
++    if(Rect{144,y0,144+widths[facts_.page][row],y0+24}.hit(x,y)||Rect{400,y0,512,y0+24}.hit(x,y)){
++     hit.row=int(row)+1;return hit;
++    }
++   }
++   return context();
+   }
+   if(selector_panel_&&facts_.kind==K::ModeSelect&&facts_.mode_type==1&&
+      facts_.source_context==dc_menu::StoryRouteContext&&facts_.interactive&&facts_.aim_verified){
+--- a/core/dreamcast/dc_menu_presentation.h
++++ b/core/dreamcast/dc_menu_presentation.h
+@@ -15,7 +15,19 @@
+            (source.mode_type==4&&source.source_context==InvasionRouteContext)||
+            (source.mode_type==6&&source.source_context==OutdoorStageContext);
+ }
+-// Other menus require both a current native art proof and the source snapshot.
++// Options owns a fixed raster too. Its native value art changes representation
++// (for example Continue 2 -> special value 5), independently of its controls.
++inline bool options_panel(const MenuFacts& source,bool native_canvas,double frame_seconds){
++    constexpr int rows[]{4,2,3,3,3,0};
++    return native_canvas&&source.verified&&source.interactive&&source.context_active&&
++        source.context_revision&&source.kind==MenuKind::Options&&source.source_context==0&&
++        source.page_count==6&&source.page>=0&&source.page<6&&source.row_count==rows[source.page]&&
++        source.row>=0&&source.row<=source.row_count&&
++        std::isfinite(frame_seconds)&&frame_seconds>=0&&
++        std::isfinite(source.native_seconds)&&source.native_seconds>=0&&
++        std::abs(source.native_seconds-frame_seconds)<=.15;
++}
++// Remaining menus require both a current native art proof and source snapshot.
+ inline bool raster_menu(const MenuFacts& source, MenuKind rendered_kind,
+                         int rendered_page, unsigned rendered_context,
+                         bool current_geometry, bool xr_eye, bool rtt) {
+--- a/core/rend/vr/xr_host.cpp
++++ b/core/rend/vr/xr_host.cpp
+@@ -2322,8 +2322,10 @@
+     const bool ownedControlFrame=ctx&&!ctx->isRTT&&ctx->framebufferWidth==640&&ctx->framebufferHeight==480&&
+         ctx->dcCamera.supported&&ctx->dcCamera.generation&&ctx->dcCamera.submit_sequence;
+     const bool selectorPanel=ownedControlFrame&&ss::dc_menu::selector_panel(menuSource,true,ctx->dcCamera.native_seconds);
++    const bool optionsPanel=ownedControlFrame&&ss::dc_menu::options_panel(menuSource,true,ctx->dcCamera.native_seconds);
++    const int controlPage=menuGeometry?nativeMenusProof.page():optionsPanel?menuSource.page:-1;
+     ssNativeControls.begin(knownNativeMenu?menuSource:ss::dc_menu::MenuFacts{},ownedControlFrame,
+-        menuGeometry?nativeMenusProof.page():-1,selectorPanel);
++        controlPage,selectorPanel||optionsPanel);
+     if(knownNativeMenu)target.ui_action=ssNativeControls.context();
+     else if(menuGeometry)target.ui_action.kind=nativeMenusProof.kind();
+     XrSpaceLocation aim[2];bool tracked[2];locateHands(time,aim,tracked);
+@@ -2630,8 +2632,8 @@
+     }
+     if(pull&&!ssFireWas&&menuSource.kind==ss::dc_menu::MenuKind::Options){
+         static unsigned records=0;
+-        if(records++<24)NOTICE_LOG(RENDERER,"SS_OPTIONS_CLICK page=%d row=%d interactive=%d geometry=%d tracked=%d hit=%d xy=%.1f,%.1f verb=%d requested_row=%d requested_page=%d",
+-            menuSource.page,menuSource.row,int(menuSource.interactive),int(menuGeometry),int(target.tracked),int(target.point_valid),
++        if(records++<24)NOTICE_LOG(RENDERER,"SS_OPTIONS_CLICK page=%d row=%d interactive=%d geometry=%d source_panel=%d tracked=%d hit=%d xy=%.1f,%.1f verb=%d requested_row=%d requested_page=%d",
++            menuSource.page,menuSource.row,int(menuSource.interactive),int(menuGeometry),int(optionsPanel),int(target.tracked),int(target.point_valid),
+             selectorScreen.x*640.f,selectorScreen.y*480.f,int(target.ui_action.verb),target.ui_action.row,target.ui_action.page);
+     }
+     ss::dc_xr::Target emitted;const bool delivered=ss::dc_xr::input_bridge().submit(target,&emitted);
+--- a/core/rend/vr_reproject.cpp
++++ b/core/rend/vr_reproject.cpp
+@@ -2719,6 +2719,7 @@
+         const bool nativeCanvas=ctx.framebufferWidth==640&&ctx.framebufferHeight==480&&ctx.dcCamera.supported&&
+             ctx.dcCamera.generation&&ctx.dcCamera.submit_sequence;
+         nativeMenuRaster=silent_scope::dc_menu::selector_panel(source,nativeCanvas,ctx.dcCamera.native_seconds)
++            ||silent_scope::dc_menu::options_panel(source,nativeCanvas,ctx.dcCamera.native_seconds)
+             ||silent_scope::dc_menu::raster_menu(source,menu.kind(),menu.page(),
+                 menu.source_context(),current,true,ctx.isRTT);
+     }

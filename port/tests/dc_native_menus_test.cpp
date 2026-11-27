@@ -127,6 +127,71 @@ Ctx options_game(){Ctx c=canvas();const auto sprite=[&](float x,float y,float w,
  for(unsigned i=0;i<2;++i){sprite(96,376-32.f*i,256,24,.1f,0,168,256,24,0x40062358);sprite(352,376-32.f*i,192,24,.1f,0,192,192,24,0x40062358);}
  for(unsigned i=0;i<4;++i){add(c,i==2?440:448,216+32.f*i,i==2?32:16,24,.1f,i==0?.25f:i==1?.1875f:i==2?.625f:.125f,0,i==2?.125f:.0625f,.09375f,0x40062358,127);auto& p=c.global_param_tr.back();for(unsigned v=0;v<4;++v)c.verts[p.first+v].col[0]=c.verts[p.first+v].col[2]=0;}
  sprite(192,160,24,24,.1f,160,0,24,24,0x40054858,164);sprite(424,160,24,24,.1f,184,0,24,24,0x40054858,164);finish(c);return c;}
+Ctx options_with_quest_dimmer(const Ctx& original=options_game()){
+ // Quest capture 2026-11-26: one native black half-alpha quad precedes the
+ // unchanged Options artwork. Untextured TCW contains an irrelevant float.
+ auto c=canvas();
+ add(c,0,0,640,480,1,0,0,0,0,0x3dcccccd,127,0,false);
+ c.verts.insert(c.verts.end(),original.verts.begin()+4,original.verts.end());
+ for(auto p:original.global_param_tr){p.first+=4;c.global_param_tr.push_back(p);}
+ for(auto i=original.idx.begin()+4;i!=original.idx.end();++i)c.idx.push_back(*i+4);
+ for(auto s:original.sortedTriangles){++s.polyIndex;s.first+=6;c.sortedTriangles.push_back(s);}
+ finish(c);return c;
+}
+void verify_quest_options_dimmer(){using namespace silent_scope;
+ auto c=options_with_quest_dimmer();dc_native_menus::NativeMenusProof proof;
+ assert(proof.configure("T9507N",c)&&proof.kind()==dc_menu::MenuKind::Options&&proof.page()==0);
+ const auto row=proof.hit(c,200,260),value=proof.hit(c,450,260),tab=proof.hit(c,300,128);
+ assert(row.kind==dc_menu::MenuKind::Options&&row.row==2&&row.from_page==0);
+ assert(value.kind==dc_menu::MenuKind::Options&&value.row==2);
+ assert(tab.kind==dc_menu::MenuKind::Options&&tab.page==1&&tab.from_page==0);
+ // The extra primitive grants no authority by itself and cannot conceal
+ // malformed artwork, geometry, texture use, topology or a different overlay.
+ for(unsigned change=0;change<12;++change){auto bad=c;auto& p=bad.global_param_tr[0];auto& v=bad.verts[p.first];
+  if(change==0)p.pcw.full|=8;
+  if(change==1)v.x+=1;
+  if(change==2)v.z=.5f;
+  if(change==3)v.u=.125f;
+  if(change==4)v.col[0]=1;
+  if(change==5)v.col[3]=255;
+  if(change==6)bad.verts[p.first+3].col[3]=0;
+  if(change==7)p.tileclip^=1;
+  if(change==8)bad.global_param_tr[1].tcw.full^=1;
+  if(change==9)bad.idx[4]=bad.idx[5];
+  if(change==10)bad.sortedTriangles[0].count=3;
+  if(change==11)bad.global_param_tr.erase(bad.global_param_tr.begin()+1);
+  assert(!proof.configure("T9507N",bad));
+ }
+ std::cout<<"Quest Options native dimmer: real layout, row/value/tab hits and 12 malformed-frame exclusions pass\n";
+}
+Ctx options_selected_row(Ctx c,unsigned row,bool feedback_flash=false){
+ const float y=216+32.f*row;
+ for(const auto& p:c.global_param_tr){auto& a=c.verts[p.first];
+  if(p.tcw.full==0x40054858&&a.y==160&&c.verts[p.first+3].x-a.x>24)
+   for(unsigned i=0;i<4;++i)c.verts[p.first+i].col[3]=127;
+  if(a.x==144&&a.y==y)for(unsigned i=0;i<4;++i)c.verts[p.first+i].col[3]=255;
+  if(a.y==y&&a.col[0]==0&&a.col[1]==255&&a.col[2]==0)
+   for(unsigned i=0;i<4;++i){auto& v=c.verts[p.first+i];v.col[3]=255;if(feedback_flash)v.col[0]=v.col[2]=255;}
+  if(p.tcw.full==0x40054858&&a.y==160&&c.verts[p.first+3].x-a.x==24){const float x=a.x==192?376.f:512.f;
+   for(unsigned i=0;i<4;++i){c.verts[p.first+i].x=x+(i&2?24:0);c.verts[p.first+i].y=y+(i&1?24:0);}}
+ }
+ return c;
+}
+void verify_selected_options_rows(){using namespace silent_scope;
+ for(unsigned row=0;row<4;++row)for(bool flash:{false,true})for(bool shade:{false,true}){
+  auto c=options_selected_row(options_game(),row,flash);if(shade)c=options_with_quest_dimmer(c);
+  dc_native_menus::NativeMenusProof proof;
+  assert(proof.configure("T9507N",c)&&proof.kind()==dc_menu::MenuKind::Options&&proof.page()==0);
+  for(unsigned side=0;side<2;++side){const auto hit=proof.hit(c,side?520.f:384.f,228+32.f*row);
+   assert(hit.kind==dc_menu::MenuKind::Options&&hit.verb==dc_menu::MenuVerb::Adjust&&hit.row==int(row)+1&&hit.direction==(side?1:-1)&&hit.from_page==0);
+  }
+  assert(proof.hit(c,200,172).kind==dc_menu::MenuKind::None);
+  assert(proof.hit(c,300,128).page==1);
+  auto bad=c;for(auto& p:bad.global_param_tr)if(p.tcw.full==0x40054858&&bad.verts[p.first].x==376)bad.verts[p.first].y+=1;
+  assert(!proof.configure("T9507N",bad));
+ }
+ std::cout<<"Options selected rows: heading dim, native value arrows, green/white feedback and dimmer variants pass\n";
+}
 void verify_options(Ctx& c,int page){using namespace silent_scope;dc_native_menus::NativeMenusProof proof;assert(proof.configure("T9507N",c)&&proof.kind()==dc_menu::MenuKind::Options&&proof.page()==page);
  constexpr unsigned rows[]{4,2,3,3,3,0};const auto arrow=proof.hit(c,192,160);assert(arrow.kind==dc_menu::MenuKind::Options&&arrow.verb==dc_menu::MenuVerb::Focus&&arrow.page==(page+5)%6&&arrow.from_page==page);
  assert(proof.hit(c,216,170).kind==dc_menu::MenuKind::None&&proof.hit(c,448,170).kind==dc_menu::MenuKind::None);
@@ -202,6 +267,8 @@ void verify_pause(Ctx& c){using namespace silent_scope;dc_native_menus::NativeMe
  }
 }
 int main(int argc,char** argv){assert(argc==1||argc==3||argc==4||argc==5||argc==6||argc==7||argc==8||argc==9);unsigned total=0;
+ verify_quest_options_dimmer();
+ verify_selected_options_rows();
  for(unsigned row=0;row<3;++row){auto c=pause_overlay(row);verify_pause(c);}
  auto options=options_game();verify_options(options,0);
  for(unsigned selected=0;selected<2;++selected){auto c=no_vmu(selected);verify_dialog(c);}

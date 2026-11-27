@@ -72,5 +72,15 @@ int main(){using namespace silent_scope;using K=dc_menu::MenuKind;using V=dc_men
  f.available_regions=0x1ff;ui.begin(f,true,-1,true);
  a=ui.resolve({},-1,0,525,352);REQUIRE(a.verb==V::Focus&&a.row==8);
  REQUIRE(ui.resolve({},-1,0,236,201).verb==V::None); // Gap between cards.
- std::cout<<"Visible native-menu controls: desired training pair, gutters, epochs, page/message identity and inactive guards pass\n";
+ // Source-owned Options controls must survive value art such as Continue 5.
+ f.kind=K::Options;f.source_context=0;f.page=0;f.page_count=6;f.row=4;f.row_count=4;
+ f.value=5;f.value_verified=true;f.verified=f.context_active=f.interactive=true;
+ ui.begin(f,true,0,true);
+ a=ui.resolve({},-1,0,200,260);REQUIRE(a.verb==V::Focus&&a.row==2&&a.page==0&&a.from_page==0);
+ a=ui.resolve({},-1,0,520,324);REQUIRE(a.verb==V::Adjust&&a.row==4&&a.direction==1);
+ a=ui.resolve({},-1,0,300,128);REQUIRE(a.verb==V::Focus&&a.page==1&&a.from_page==0);
+ REQUIRE(ui.resolve({},-1,0,90,450).verb==V::None);
+ ui.begin(f,true,0,false);REQUIRE(ui.resolve({},-1,0,200,260).verb==V::None);
+ f.interactive=false;ui.begin(f,true,0,true);REQUIRE(ui.resolve({},-1,0,200,260).verb==V::None);
+ std::cout<<"Visible native-menu controls: desired training pair, gutters, epochs, page/message identity, value variants and inactive guards pass\n";
 }

@@ -157,8 +157,12 @@ public:
   if(!i.trigger_down)release_required_=false;
   if(!f.context_active){cancel();out.status=PolicyStatus::Inactive;return out;}
   if(release_required_){out.status=PolicyStatus::Rearm;return out;}
+  // A category click must first walk up from the selected value to the heading.
+  // Each step still has its own 300 ms ACK bound; retain enough overall time
+  // for all four rows plus the requested page change.
+  const double pending_budget=goal_.kind==MenuKind::Options&&goal_.verb==MenuVerb::Focus&&goal_.page!=goal_.from_page?2.:.5;
   if(!f.interactive){
-   if((pending_&&i.host_seconds-clicked_at_>.5)||(flight_!=Axis::None&&(i.host_seconds-flight_host_>.3||i.native_seconds-flight_native_>.3))){
+   if((pending_&&i.host_seconds-clicked_at_>pending_budget)||(flight_!=Axis::None&&(i.host_seconds-flight_host_>.3||i.native_seconds-flight_native_>.3))){
     cancel();release_required_=true;out.status=PolicyStatus::Expired;
    }else out.status=PolicyStatus::WaitingAck;
    return out;
@@ -181,7 +185,7 @@ public:
       &&i.host_seconds-i.click_host_seconds>=-.02&&i.host_seconds-i.click_host_seconds<=.5){
    goal_=i.clicked;pending_=true;clicked_at_=i.click_host_seconds;
   }
-  if(pending_&&i.host_seconds-clicked_at_>.5){pending_=false;out.status=PolicyStatus::Expired;return out;}
+  if(pending_&&i.host_seconds-clicked_at_>pending_budget){pending_=false;out.status=PolicyStatus::Expired;return out;}
   const bool hover_page_arrow=i.hover.kind==MenuKind::Options&&i.hover.page!=i.hover.from_page;
   if(!pending_&&!hover_page_arrow&&bound(i.hover,f))goal_=i.hover;
   if(flight_!=Axis::None){
